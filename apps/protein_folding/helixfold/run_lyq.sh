@@ -7,7 +7,6 @@ precision=${1:-"bf16"}
 amp_level=${2:-"O2"}
 
 cd $(dirname $0)
-
 root_path="$(pwd)"
 
 #export NCCL_DEBUG=INFO

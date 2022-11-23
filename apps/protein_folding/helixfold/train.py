@@ -27,8 +27,12 @@ import logging
 
 import paddle
 from paddle import distributed as dist
-from tensorboardX import SummaryWriter
+try:
+    from tensorboardX import SummaryWriter
+except Exception as ex:
+    print(f'Fail to import ppfleetx: {ex}')
 
+import utils.profile as profile
 from utils.utils import get_model_parameter_size, add_to_data_writer, upload_to_hadoop, csv_print
 from utils.metric import ResultsCollect
 from utils.model import RunModel
@@ -40,8 +44,11 @@ from utils.init_env import init_seed, init_distributed_env
 from utils.misc import TrainLogger, set_logging_level
 from alphafold_paddle.model import config
 from alphafold_paddle.data.utils import align_feat
-from ppfleetx.distributed.protein_folding import dap, bp, dp
-from ppfleetx.distributed.protein_folding.scg import scg
+try:
+    from ppfleetx.distributed.protein_folding import dap, bp, dp
+    from ppfleetx.distributed.protein_folding.scg import scg
+except Exception as ex:
+    print(f'Fail to import ppfleetx: {ex}')
 
 
 MAX_EVAL_SIZE = int(os.environ.get('MAX_EVAL_SIZE', 1400))
@@ -51,6 +58,7 @@ print(f'[ENV] MAX_EVAL_SIZE:{MAX_EVAL_SIZE}')
 def time_me():
     # paddle.device.cuda.synchronize()
     return time.time()
+
 
 def get_optimizer(opt_config, model):
     if opt_config.grad_clip == 0:
@@ -97,6 +105,7 @@ def get_optimizer(opt_config, model):
             parameters = parameters
         )
     return optimizer, lr_scheduler
+
 
 def get_bf16_op_list():
     """tbd."""
@@ -224,17 +233,25 @@ def full_eval(args, cur_step, model, valid_dataset, test_dataset_dict, data_writ
     ema.restore()
 
 
+SAVED_BATCH_DATA = None
 def train(args, cur_step, model, train_data_gen, distill_data_gen, train_config, model_config, lr_scheduler, optimizer, res_collect, train_logger, ema):
     model.train()
     # fetch data
     logging.debug(f'[Main] Train_step: {cur_step} fetch_data')
     s0 = time_me()
     batch = None
-    if distill_data_gen:
-        rand_distill = np.random.random()
-        batch = next(distill_data_gen) if rand_distill > 0.25 else next(train_data_gen)
+    if not args.use_saved_train_batch:
+        if distill_data_gen:
+            rand_distill = np.random.random()
+            batch = next(distill_data_gen) if rand_distill > 0.25 else next(train_data_gen)
+        else:
+            batch = next(train_data_gen)
     else:
-        batch = next(train_data_gen)
+        global SAVED_BATCH_DATA
+        if SAVED_BATCH_DATA is None:
+            SAVED_BATCH_DATA = paddle.load('./saved_data/alphafold_batch_initial.bs1.dat')
+#            SAVED_BATCH_DATA = paddle.load('./saved_data/alphafold_batch_finetune.bs1.dat')
+        batch = SAVED_BATCH_DATA
     if not check_batch(batch):
         return
     add_dyna_features(train_config, model_config, batch, cur_step)
@@ -360,7 +377,8 @@ def main(args):
     ema.register()
     
     ### load dataset
-    if not args.only_test:
+    train_dataset = None
+    if not args.only_test and not args.use_saved_train_batch:
         train_dataset = AF2Dataset(
                 model_config=model_config,
                 data_config=data_config.train,
@@ -388,7 +406,7 @@ def main(args):
                     trainer_id=dp_rank, 
                     trainer_num=dp_nranks)
     distill_dataset = None
-    if 'distill' in data_config:
+    if 'distill' in data_config and not args.use_saved_train_batch:
         distill_dataset = AF2DistillDataset(
                 model_config=model_config,
                 data_config=data_config.distill,
@@ -406,16 +424,18 @@ def main(args):
         exit(0)
 
     ### create data loader
-    train_loader = paddle.io.DataLoader(
-            dataset=train_dataset,
-            batch_sampler=LoopedBatchSampler(
-                dataset=train_dataset, 
-                shuffle=True, 
-                batch_size=args.batch_size, 
-                drop_last=False),
-            num_workers=args.num_workers,
-            worker_init_fn=worker_init_fn if args.seed is not None else None)
-    train_data_gen = iter(train_loader)
+    train_data_gen = None
+    if train_dataset:
+        train_loader = paddle.io.DataLoader(
+                dataset=train_dataset,
+                batch_sampler=LoopedBatchSampler(
+                    dataset=train_dataset, 
+                    shuffle=True, 
+                    batch_size=args.batch_size, 
+                    drop_last=False),
+                num_workers=args.num_workers,
+                worker_init_fn=worker_init_fn if args.seed is not None else None)
+        train_data_gen = iter(train_loader)
 
     distill_data_gen = None
     if distill_dataset:
@@ -448,6 +468,8 @@ def main(args):
     for _ in range(cur_step):
         lr_scheduler.step()
     logging.info('[Main] Start training.')
+
+    profile.get_profiler(20, 25, profiler_type=args.profiler_type)
     while True:
         # reset train log info
         if cur_step == 5:
@@ -475,9 +497,14 @@ def main(args):
             paddle.save(model.alphafold.state_dict(), f'{args.model_dir}/step_{cur_step}.pdparams')
             if args.paddlecloud:
                 upload_to_hadoop(args, cur_step)
-        
+
+        import sys
+        #sys.exit(0)        
+
+        profile.step()
         cur_step += 1
         sys.stdout.flush()
+    profile.stop()
 
 
 if __name__ == '__main__':
@@ -497,6 +524,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_name", type=str, help='used to choose model config')
     parser.add_argument("--init_model", type=str, default='')
     parser.add_argument("--precision", type=str, choices=['fp32', 'bf16'], default='fp32')
+    parser.add_argument("--amp_level", type=str, default='O1')
     parser.add_argument("--start_step", type=int, default=0)
     parser.add_argument("--train_step", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=1)
@@ -512,6 +540,8 @@ if __name__ == '__main__':
     parser.add_argument("--dap_degree", type=int, default=1)
     parser.add_argument("--dap_comm_sync", action='store_true', default=True)
     parser.add_argument("--bp_degree", type=int, default=1)
+    parser.add_argument("--use_saved_train_batch", action='store_true', default=False)
+    parser.add_argument("--profiler_type", type=str, default='none')
     args = parser.parse_args()
 
     main(args)

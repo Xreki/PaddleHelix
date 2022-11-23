@@ -30,6 +30,8 @@ from alphafold_paddle.model.utils import mask_mean, subbatch
 from alphafold_paddle.model import folding, lddt, quat_affine, all_atom
 from alphafold_paddle.model.utils import init_gate_linear, init_final_linear
 
+from utils import profile
+
 # Map head name in config to head name in model params
 Head_names = {
     'masked_msa': 'masked_msa_head',
@@ -82,16 +84,19 @@ class Dropout(nn.Layer):
             raise TypeError("datatype of axis argument should be int or list")
 
         self.p = p
-        self.axis = axis
         self.mode = mode
         self.name = name
+
+        self.axis = None
+        if axis is not None:
+            self.axis = [axis] if isinstance(axis, int) else list(axis)
 
     def forward(self, input):
         # fast return for p == 0
         if self.p == 0:
             return input
 
-        if self.axis == None: 
+        if self.axis is None: 
             out = nn.functional.dropout(input,
                             p=self.p,
                             axis=self.axis,
@@ -100,7 +105,6 @@ class Dropout(nn.Layer):
                             name=self.name)
         else:
             seed = None
-            drop_axes = [self.axis] if isinstance(self.axis, int) else list(self.axis)
             if paddle.static.default_main_program().random_seed != 0:
                 seed = paddle.static.default_main_program().random_seed
 
@@ -109,7 +113,7 @@ class Dropout(nn.Layer):
                                                     is not None, 'seed',
                                                     seed if seed is not None else 0,
                                                     'dropout_implementation', self.mode, 'axis',
-                                                    drop_axes)
+                                                    self.axis)
 
         return out
 
@@ -152,6 +156,7 @@ class AlphaFold(nn.Layer):
             predictions from the various heads.
 
         """
+        profile.push_profile_event(self.__class__.__name__)
         inner_batch, num_residues = batch['aatype'].shape[1:]
 
         def _get_prev(ret):
@@ -223,7 +228,9 @@ class AlphaFold(nn.Layer):
             prev = {}
             num_iter = 0
 
-        return _run_single_recycling(prev, num_iter, compute_loss=compute_loss)
+        out = _run_single_recycling(prev, num_iter, compute_loss=compute_loss)
+        profile.pop_profile_event()
+        return out
 
 
 class AlphaFoldIteration(nn.Layer):
@@ -286,6 +293,7 @@ class AlphaFoldIteration(nn.Layer):
                 non_ensembled_batch,
                 compute_loss=False,
                 ensemble_representations=False):
+        profile.push_profile_event(self.__class__.__name__)
         num_ensemble = ensembled_batch['seq_length'].shape[1]
         if not ensemble_representations:
             assert num_ensemble == 1
@@ -387,6 +395,7 @@ class AlphaFoldIteration(nn.Layer):
         else:
             ret, total_loss = _forward_heads(representations, ret, batch0)
 
+        profile.pop_profile_event()
         if compute_loss:
             return ret, total_loss
         else:
@@ -477,6 +486,7 @@ class Attention(nn.Layer):
         Returns:
             A float32 tensor of shape [batch_size, row_size, N_queries, output_dim].
         """
+        profile.push_profile_event(self.__class__.__name__)
         if self.fuse_attention:
             if nonbatched_bias is not None:
                 nonbatched_bias = paddle.unsqueeze(nonbatched_bias, axis=1)
@@ -504,6 +514,7 @@ class Attention(nn.Layer):
 
             output = paddle.einsum('nbqhc,hco->nbqo', weighted_avg,
                                 self.output_w) + self.output_b 
+        profile.pop_profile_event()
         return output
 
 
@@ -561,6 +572,7 @@ class GlobalAttention(nn.Layer):
             default_initializer=nn.initializer.Constant(0.0))
 
     def forward(self, q_data, m_data, q_mask):
+        profile.push_profile_event(self.__class__.__name__)
         k = paddle.einsum('nbka,ac->nbkc', m_data, self.key_w)
         v = paddle.einsum('nbka,ac->nbkc', m_data, self.value_w)
 
@@ -590,6 +602,7 @@ class GlobalAttention(nn.Layer):
                                    self.output_w) + self.output_b
             output = paddle.unsqueeze(output, axis=-1)
 
+        profile.pop_profile_event()
         return output
 
 
@@ -630,7 +643,7 @@ class MSARowAttentionWithPairBias(nn.Layer):
                 msa_channel, msa_channel, msa_channel)
 
     def forward(self, msa_act, msa_mask, pair_act):
-
+        profile.push_profile_event(self.__class__.__name__)
         pair_act = self.feat_2d_norm(pair_act)
         
         nonbatched_bias = paddle.einsum(
@@ -651,6 +664,7 @@ class MSARowAttentionWithPairBias(nn.Layer):
         else:
             msa_act = self.attention(msa_act, msa_act, bias, nonbatched_bias)
 
+        profile.pop_profile_event()
         return msa_act
 
 
@@ -674,7 +688,7 @@ class MSAColumnGlobalAttention(nn.Layer):
             extra_msa_channel, extra_msa_channel, extra_msa_channel)
 
     def forward(self, msa_act, msa_mask):
-
+        profile.push_profile_event(self.__class__.__name__)
         msa_act = paddle.transpose(msa_act, [0, 2, 1, 3])
         msa_mask = paddle.transpose(msa_mask, [0, 2, 1])
 
@@ -693,6 +707,7 @@ class MSAColumnGlobalAttention(nn.Layer):
             msa_act = self.attention(msa_act, msa_act, msa_mask)
 
         msa_act = paddle.transpose(msa_act, [0, 2, 1, 3])
+        profile.pop_profile_event()
         return msa_act
 
 
@@ -716,6 +731,7 @@ class MSAColumnAttention(nn.Layer):
             msa_channel, msa_channel, msa_channel)
 
     def forward(self, msa_act, msa_mask):
+        profile.push_profile_event(self.__class__.__name__)
 
         msa_act = paddle.transpose(msa_act, [0, 2, 1, 3])
         msa_mask = paddle.transpose(msa_mask, [0, 2, 1])
@@ -733,6 +749,7 @@ class MSAColumnAttention(nn.Layer):
             msa_act = self.attention(msa_act, msa_act, bias)
 
         msa_act = paddle.transpose(msa_act, [0, 2, 1, 3])
+        profile.pop_profile_event()
         return msa_act
 
 
@@ -776,6 +793,7 @@ class Transition(nn.Layer):
             weight_attr=paddle.ParamAttr(initializer=last_init))
 
     def forward(self, act, mask):
+        profile.push_profile_event(self.__class__.__name__)
         act = self.input_layer_norm(act)
 
         def transition_module(x):
@@ -792,6 +810,7 @@ class Transition(nn.Layer):
         else:
             act = transition_module(act)
 
+        profile.pop_profile_event()
         return act
 
 
@@ -823,16 +842,20 @@ class MaskedMsaHead(nn.Layer):
             * 'logits': logits of shape [batch, N_seq, N_res, N_aatype] with
                 (unnormalized) log probabilies of predicted aatype at position.
         """
+        profile.push_profile_event(self.__class__.__name__)
         del batch
         logits = self.logits(representations['msa'])
+        profile.pop_profile_event()
         return {'logits': logits}
 
     def loss(self, value, batch):
+        profile.push_profile_event(self.__class__.__name__ + "/loss")
         errors = softmax_cross_entropy(
             labels=paddle.nn.functional.one_hot(batch['true_msa'], num_classes=self.num_output),
             logits=value['logits'])
         loss = (paddle.sum(errors * paddle.cast(batch['bert_mask'], dtype=errors.dtype), axis=[-2, -1]) /
                 (1e-8 + paddle.sum(batch['bert_mask'], axis=[-2, -1])))
+        profile.pop_profile_event()
         return {'loss': loss}
 
 
@@ -879,6 +902,7 @@ class PredictedLDDTHead(nn.Layer):
         return dict(logits=logits)
 
     def loss(self, value, batch):
+        profile.push_profile_event(self.__class__.__name__ + "/loss")
         # Shape (n_batch, num_res, 37, 3)
         pred_all_atom_pos = value['structure_module']['final_atom_positions']
         # Shape (n_batch, num_res, 37, 3)
@@ -921,6 +945,7 @@ class PredictedLDDTHead(nn.Layer):
             loss *= paddle.cast((resolution >= self.config.min_resolution)
                     & (resolution <= self.config.max_resolution), 'float32')
         output = {'loss': loss}
+        profile.pop_profile_event()
         return output
 
 
@@ -952,13 +977,16 @@ class PredictedAlignedErrorHead(nn.Layer):
                 * logits: logits for aligned error, shape [B, N_res, N_res, N_bins].
                 * bin_breaks: array containing bin breaks, shape [N_bins - 1].
         """
+        profile.push_profile_event(self.__class__.__name__)
         logits = self.logits(representations['pair'])
         breaks = paddle.linspace(0., self.config.max_error_bin,
                                  self.config.num_bins-1)
 
+        profile.pop_profile_event()
         return dict(logits=logits, breaks=breaks)
 
     def loss(self, value, batch):
+        profile.push_profile_event(self.__class__.__name__ + "/loss")
         # Shape (B, num_res, 7)
         predicted_affine = quat_affine.QuatAffine.from_tensor(
             value['structure_module']['final_affines'])
@@ -1008,6 +1036,7 @@ class PredictedAlignedErrorHead(nn.Layer):
             loss *= paddle.cast((resolution >= self.config.min_resolution)
                     & (resolution <= self.config.max_resolution), 'float32')
 
+        profile.pop_profile_event()
         output = {'loss': loss}
         return output
 
@@ -1039,10 +1068,13 @@ class ExperimentallyResolvedHead(nn.Layer):
                 log probability that an atom is resolved in atom37 representation,
                 can be converted to probability by applying sigmoid.
         """
+        profile.push_profile_event(self.__class__.__name__)
         logits = self.logits(representations['single'])
+        profile.pop_profile_event()
         return dict(logits=logits)
 
     def loss(self, value, batch):
+        profile.push_profile_event(self.__class__.__name__ + "/loss")
         logits = value['logits']
         assert len(logits.shape) == 3
 
@@ -1061,6 +1093,7 @@ class ExperimentallyResolvedHead(nn.Layer):
             loss *= paddle.cast((resolution >= self.config.min_resolution)
                     & (resolution <= self.config.max_resolution), 'float32')
 
+        profile.pop_profile_event()
         output = {'loss': loss}
         return output
 
@@ -1092,6 +1125,7 @@ class DistogramHead(nn.Layer):
             * logits: logits for distogram, shape [batch, N_res, N_res, N_bins].
             * bin_breaks: array containing bin breaks, shape [batch, N_bins - 1].
         """
+        profile.push_profile_event(self.__class__.__name__)
         half_logits = self.half_logits(representations['pair'])
 
         logits = half_logits + paddle.transpose(half_logits, perm=[0, 2, 1, 3])
@@ -1100,13 +1134,17 @@ class DistogramHead(nn.Layer):
         breaks = paddle.tile(breaks[None, :],
                             repeat_times=[logits.shape[0], 1])
 
+        profile.pop_profile_event()
         return {
             'logits': logits, 
             'bin_edges': breaks}
 
     def loss(self, value, batch):
-        return _distogram_log_loss(value['logits'], value['bin_edges'],
+        profile.push_profile_event(self.__class__.__name__ + "/loss")
+        out = _distogram_log_loss(value['logits'], value['bin_edges'],
                                batch, self.config.num_bins)
+        profile.pop_profile_event()
+        return out
 
 
 def _distogram_log_loss(logits, bin_edges, batch, num_bins):
@@ -1159,6 +1197,7 @@ def dgram_from_positions(positions, num_bins, min_bin, max_bin):
     dgram = ((dist2 > lower_breaks.astype(dist2.dtype)).astype('float32') *
                 (dist2 < upper_breaks.astype(dist2.dtype)).astype('float32'))
     return dgram
+
 
 class EvoformerIteration(nn.Layer):
     """Single iteration (block) of Evoformer stack.
@@ -1435,6 +1474,7 @@ class EvoformerIteration(nn.Layer):
         return msa_act, pair_act
 
     def forward(self, msa_act, pair_act, masks):
+        profile.push_profile_event(self.__class__.__name__)
 
         if self.global_config.outer_product_mean_position in ['origin', 'middle']:
             msa_act, pair_act = self.outer_product_mean_origin(msa_act, pair_act, masks)
@@ -1448,6 +1488,7 @@ class EvoformerIteration(nn.Layer):
         else:
             raise Error("Only support outer_product_mean_position in ['origin', 'middle', ''first', 'end'] now!")
 
+        profile.pop_profile_event()
         return msa_act, pair_act
 
 
@@ -1578,6 +1619,7 @@ class EmbeddingsAndEvoformer(nn.Layer):
         return paddle.concat(msa_feat, axis=-1)
 
     def forward(self, batch):
+        profile.push_profile_event(self.__class__.__name__)
         # InputEmbedder
         # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 5
         # Jumper et al. (2021) Suppl. Alg. 3 "InputEmbedder"
@@ -1757,6 +1799,7 @@ class EmbeddingsAndEvoformer(nn.Layer):
             'msa_first_row': msa_activations[:, 0],
         }
 
+        profile.pop_profile_event()
         return output
 
 
@@ -1805,6 +1848,8 @@ class OuterProductMean(nn.Layer):
         Returns:
         Update to pair representation, shape [batch, N_res, N_res, c_z].
         """
+
+        profile.push_profile_event(self.__class__.__name__)
         
         act = self.layer_norm_input(act)
         right_act = self.right_projection(act)
@@ -1840,6 +1885,7 @@ class OuterProductMean(nn.Layer):
 
         act = act / norm
 
+        profile.pop_profile_event()
         return act
 
 
@@ -1880,6 +1926,8 @@ class TriangleAttention(nn.Layer):
         Returns:
         Update to pair_act, shape [batch, N_res, N_res, c_z].
         """
+        profile.push_profile_event(self.__class__.__name__)
+
         if self.config.orientation == 'per_column':
             pair_act = pair_act.transpose([0, 2, 1, 3])
             pair_mask = pair_mask.transpose([0, 2, 1])
@@ -1902,6 +1950,7 @@ class TriangleAttention(nn.Layer):
         if self.config.orientation == 'per_column':
             pair_act = pair_act.transpose([0, 2, 1, 3])
 
+        profile.pop_profile_event()
         return pair_act
 
 
@@ -1950,6 +1999,7 @@ class TriangleMultiplication(nn.Layer):
         Returns:
         Outputs, same shape/type as act.
         """
+        profile.push_profile_event(self.__class__.__name__)
         mask = paddle.unsqueeze(mask, axis=-1) # [batch, N_res, N_res, 1]
 
         act = self.layer_norm_input(act) # line 1
@@ -1999,6 +2049,7 @@ class TriangleMultiplication(nn.Layer):
 
         act = act * gate_values
 
+        profile.pop_profile_event()
         return act
 
 
@@ -2084,6 +2135,7 @@ class TemplatePair(nn.Layer):
         Updated pair_act, shape [batch, N_res, N_res, c_t].
         """
 
+        profile.push_profile_event(self.__class__.__name__)
         residual = self.triangle_attention_starting_node(pair_act, pair_mask)
         residual = self.triangle_starting_dropout(residual)
         pair_act = pair_act + residual
@@ -2104,6 +2156,7 @@ class TemplatePair(nn.Layer):
         residual = self.pair_transition_dropout(residual)
         pair_act = pair_act + residual
 
+        profile.pop_profile_event()
         return pair_act
 
 
@@ -2141,6 +2194,7 @@ class SingleTemplateEmbedding(nn.Layer):
         Returns:
             A template embedding [N_res, N_res, c_z].
         """
+        profile.push_profile_event(self.__class__.__name__)
         assert mask_2d.dtype == query_embedding.dtype
         dtype = query_embedding.dtype
         num_res = batch['template_aatype'].shape[1]
@@ -2209,6 +2263,7 @@ class SingleTemplateEmbedding(nn.Layer):
                 is_recompute=self.training and idx >= self.config.template_pair_stack.recompute_start_block_index)
 
         act = self.output_layer_norm(act)
+        profile.pop_profile_event()
         return act
 
 
@@ -2245,6 +2300,7 @@ class TemplateEmbedding(nn.Layer):
             A template embedding [n_batch, N_res, N_res, c_z].
         """
 
+        profile.push_profile_event(self.__class__.__name__)
         num_templates = template_batch['template_mask'].shape[1]
 
         num_channels = (self.config.template_pair_stack
@@ -2289,4 +2345,5 @@ class TemplateEmbedding(nn.Layer):
 
         # No gradients if no templates.
         emb *= (paddle.sum(template_mask) > 0.).astype(emb.dtype)
+        profile.pop_profile_event()
         return emb

@@ -69,21 +69,19 @@ def clip_grad_norm_(parameters, clip_norm, auto_skip_clip=False):
         global_norm_var.append(global_norm_var_fp64)
     global_norm_var = paddle.add_n(global_norm_var)
     global_norm_var = paddle.sqrt(global_norm_var)
-    max_global_norm = paddle.fluid.layers.fill_constant(
-        shape=[1], dtype=global_norm_var.dtype, value=clip_norm)
+    max_global_norm = paddle.full(
+        shape=[1], dtype=global_norm_var.dtype, fill_value=clip_norm)
 
     need_clip = False
     if not auto_skip_clip:  # always apply clip
         need_clip = True
-        clip_var = paddle.fluid.layers.elementwise_div(
+        clip_var = paddle.divide(
             x=max_global_norm,
-            y=paddle.fluid.layers.elementwise_max(
-                x=global_norm_var, y=max_global_norm))
+            y=paddle.maximum(x=global_norm_var, y=max_global_norm))
     elif global_norm_var > max_global_norm:
         # only when global_norm_var > max_global_norm, grad need clip
         need_clip = True
-        clip_var = paddle.fluid.layers.elementwise_div(
-            x=max_global_norm, y=global_norm_var)
+        clip_var = paddle.divide(x=max_global_norm, y=global_norm_var)
 
     if need_clip:
         for g in grads:

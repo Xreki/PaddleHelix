@@ -1,0 +1,8 @@
+{
+    "train": {
+        "protein_clust_file": "./data/protein_clust/bc40_clust-before20210903.list",
+        "protein_map_file": "./data/protein_id.mapping",
+        "feature_dir": "./data/features",
+        "structure_dir": "./data/mmcif"
+    }
+}

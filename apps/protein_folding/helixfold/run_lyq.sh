@@ -3,7 +3,8 @@
 unset PADDLE_TRAINER_ENDPOINTS
 export CUDA_VISIBLE_DEVICES="7"
 
-precision=${1:-"fp32"}
+precision=${1:-"bf16"}
+amp_level=${2:-"O2"}
 
 cd $(dirname $0)
 
@@ -41,7 +42,7 @@ train_af2() {
     train_step=105
     # distributed_args="-m paddle.distributed.launch --log_dir ./log/$exp_name"
 
-    #profiler_type="native"
+    profiler_type="native"
     #profiler_type="native-old"
     #profiler_type="nvprof"
     #profiler_type="debug"
@@ -71,6 +72,7 @@ train_af2() {
     echo "data_config     : ${data_config}"
     echo "train_config    : ${train_config}"
     echo "batch_size      : ${batch_size}"
+    echo "amp_level       : ${amp_level}"
     echo "precision       : ${precision}"
     echo "profiler_type   : ${profiler_type}"
     echo "output_filename : ${output_filename}"
@@ -80,6 +82,7 @@ train_af2() {
             --tm_score_bin=${TM_SCORE_BIN} \
             --lddt_score_bin=${LDDT_SCORE_BIN} \
             --precision=${precision} \
+            --amp_level=${amp_level} \
             --data_config=${data_config} \
             --train_config=${train_config} \
             --model_name=${model_name} \

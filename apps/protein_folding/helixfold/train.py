@@ -260,8 +260,12 @@ def train(args, cur_step, model, train_data_gen, distill_data_gen, train_config,
     def _forward_with_precision(batch):
         if args.precision == "bf16":
             black_list, white_list = get_bf16_op_list()
-            with paddle.amp.auto_cast(level='O1', custom_white_list=white_list, custom_black_list=black_list, dtype='bfloat16'):
-                return model(batch)
+            if args.amp_level == "O2":
+                with paddle.amp.auto_cast(level='O2', custom_black_list=black_list, dtype='bfloat16'):
+                    return model(batch)
+            else :
+                with paddle.amp.auto_cast(level='O1', custom_white_list=white_list, custom_black_list=black_list, dtype='bfloat16'):
+                    return model(batch)
         elif args.precision == "fp32":
             return model(batch)
         else:
@@ -376,6 +380,15 @@ def main(args):
     ema = EMA(optimizer._param_groups, 0.999)
     ema.register()
     
+    if args.precision == "bf16" and args.amp_level == "O2":
+        print("args.amp_level : ", args.amp_level)
+        submodel, optimizer = paddle.amp.decorate(
+            models=model.alphafold.alphafold_iteration.evoformer,
+            dtype='bfloat16',
+            optimizers=optimizer,
+            level=args.amp_level)
+        model.alphafold.alphafold_iteration.evoformer = submodel
+
     ### load dataset
     train_dataset = None
     if not args.only_test and not args.use_saved_train_batch:
@@ -524,7 +537,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_name", type=str, help='used to choose model config')
     parser.add_argument("--init_model", type=str, default='')
     parser.add_argument("--precision", type=str, choices=['fp32', 'bf16'], default='fp32')
-    parser.add_argument("--amp_level", type=str, default='O1')
+    parser.add_argument("--amp_level", type=str, default='O2')
     parser.add_argument("--start_step", type=int, default=0)
     parser.add_argument("--train_step", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=1)

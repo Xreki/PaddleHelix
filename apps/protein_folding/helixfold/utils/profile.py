@@ -58,32 +58,33 @@ def dtype_info():
 
 
 def push_profile_event(name):
-    global GLOBAL_PROFILER_TYPE
-    #if GLOBAL_PROFILER_TYPE == "native":
-    #    record_event = profiler.RecordEvent(name)
-    #    record_event.begin()
-    #    return record_event
-    #elif GLOBAL_PROFILER_TYPE == "nvprof":
-    #    paddle.fluid.core.nvprof_nvtx_push(name)
-    if GLOBAL_PROFILER_TYPE == "debug":
-        global GLOBAL_EVENT_STACK
-        GLOBAL_EVENT_STACK.append(name)
-        print("++++++++++++++++++++ Enter class {}: {}".format(name, dtype_info()), flush=True)
-        sys.stdout.flush()
+    #global GLOBAL_PROFILER_TYPE
+    ##if GLOBAL_PROFILER_TYPE == "native":
+    ##    record_event = profiler.RecordEvent(name)
+    ##    record_event.begin()
+    ##    return record_event
+    ##elif GLOBAL_PROFILER_TYPE == "nvprof":
+    ##    paddle.fluid.core.nvprof_nvtx_push(name)
+    #if GLOBAL_PROFILER_TYPE == "debug":
+    #    global GLOBAL_EVENT_STACK
+    #    GLOBAL_EVENT_STACK.append(name)
+    #    print("++++++++++++++++++++ Enter class {}: {}".format(name, dtype_info()), flush=True)
+    #    sys.stdout.flush()
     return None
 
 
 def pop_profile_event(event=None):
-    global GLOBAL_PROFILER_TYPE
-    #if GLOBAL_PROFILER_TYPE == "native":
-    #    event.end()
-    #elif GLOBAL_PROFILER_TYPE == "nvprof":
-    #    paddle.fluid.core.nvprof_nvtx_pop()
-    if GLOBAL_PROFILER_TYPE == "debug":
-        global GLOBAL_EVENT_STACK
-        name = GLOBAL_EVENT_STACK.pop()
-        print("-------------------- Leave class {}: {}".format(name, dtype_info()), flush=True)
-        sys.stdout.flush()
+    pass
+    #global GLOBAL_PROFILER_TYPE
+    ##if GLOBAL_PROFILER_TYPE == "native":
+    ##    event.end()
+    ##elif GLOBAL_PROFILER_TYPE == "nvprof":
+    ##    paddle.fluid.core.nvprof_nvtx_pop()
+    #if GLOBAL_PROFILER_TYPE == "debug":
+    #    global GLOBAL_EVENT_STACK
+    #    name = GLOBAL_EVENT_STACK.pop()
+    #    print("-------------------- Leave class {}: {}".format(name, dtype_info()), flush=True)
+    #    sys.stdout.flush()
           
 
 def _switch_profile(start, end, event_name=None):

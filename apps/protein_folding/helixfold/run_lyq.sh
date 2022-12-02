@@ -6,6 +6,8 @@ export CUDA_VISIBLE_DEVICES="7"
 precision=${1:-"bf16"}
 amp_level=${2:-"O2"}
 
+MY_PYTHON_BIN=`which python`
+
 cd $(dirname $0)
 root_path="$(pwd)"
 
@@ -16,7 +18,7 @@ TM_SCORE_BIN=$root_path/tools/tm_score
 LDDT_SCORE_BIN=$root_path/tools/lddt
 
 # disable C++ enisum, using python enisum
-export FLAGS_new_einsum=0
+#export FLAGS_new_einsum=0
 export FLAGS_enable_eager_mode=1
 export FLAGS_use_autotune=1
 #export FLAGS_check_nan_inf=1
@@ -24,9 +26,10 @@ export FLAGS_use_autotune=1
 chmod +x $TM_SCORE_BIN
 chmod +x $LDDT_SCORE_BIN
 
-#export GLOG_v=4
-#export GLOG_vmodule=layer=4
+#export GLOG_v=5
+#export GLOG_vmodule=layer=4,dygraph_functions=5,utils=5
 #export GLOG_vmodule=transpose_op=4
+#export GLOG_vmodule=broadcast_function=6
 #export GLOG_vmodule=fused_gate_attention_op=4,fused_gate_attention=4,gpu_info=10,naive_best_fit_allocator=10,auto_growth_best_fit_allocator=10
 #export GLOG_vmodule=fused_gate_attention_op=4,fused_gate_attention=4,gpu_info=10 #,layer=4
 #export FLAGS_benchmark=1
@@ -41,7 +44,7 @@ train_af2() {
     train_step=105
     # distributed_args="-m paddle.distributed.launch --log_dir ./log/$exp_name"
 
-    profiler_type="native"
+    #profiler_type="native"
     #profiler_type="native-old"
     #profiler_type="nvprof"
     #profiler_type="debug"
@@ -53,10 +56,10 @@ train_af2() {
     if [ "${use_saved_train_batch}" != "" ]; then
         output_filename=${output_filename}.use_saved_data
     fi
-    output_filename=${output_filename}.dev20221115
+    output_filename=${output_filename}.dev20221201
 
     if [ "${profiler_type}" = "nvprof" ]; then
-        export PATH=/opt/nvidia/nsight-systems/2021.2.1/bin:$PATH
+        export PATH=/opt/nvidia/nsight-systems/2022.5.1/bin:$PATH
         nsys_args="nsys profile --stats true -w true -t cuda,nvtx,osrt,cudnn,cublas --capture-range=cudaProfilerApi -x true --force-overwrite true -o ${output_filename}"
     fi
 
@@ -77,7 +80,7 @@ train_af2() {
     echo "output_filename : ${output_filename}"
     echo "================================================="
 
-    ${nsys_args} python ${distributed_args} -u train.py \
+    ${nsys_args} ${MY_PYTHON_BIN} ${distributed_args} -u train.py \
             --tm_score_bin=${TM_SCORE_BIN} \
             --lddt_score_bin=${LDDT_SCORE_BIN} \
             --precision=${precision} \
@@ -96,7 +99,7 @@ train_af2() {
             --logging_level="NOTSET" \
             --model_dir="./models" \
             --log_dir="./outputs" \
-            --profiler_type=${profiler_type} ${use_saved_train_batch} #| tee log_${output_filename}.txt 2>&1
+            --profiler_type=${profiler_type} ${use_saved_train_batch} | tee log_${output_filename}.txt 2>&1
 
     if [ "${collect_gpu_status}" = "True" ]; then
         kill ${gpu_query_pid}

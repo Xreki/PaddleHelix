@@ -102,7 +102,7 @@ def get_optimizer(opt_config, model):
             learning_rate=lr_scheduler, 
             epsilon=1e-06,
             grad_clip=grad_clip,
-            parameters = parameters
+            parameters=parameters
         )
     return optimizer, lr_scheduler
 
@@ -511,12 +511,13 @@ def main(args):
             if args.paddlecloud:
                 upload_to_hadoop(args, cur_step)
 
-        import sys
-        #sys.exit(0)        
+        if args.profiler_type == "debug":
+            import sys
+            sys.exit(0)        
 
         profile.step()
         cur_step += 1
-        sys.stdout.flush()
+        #sys.stdout.flush()
     profile.stop()
 
 

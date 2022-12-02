@@ -184,7 +184,8 @@ class InvariantPointAttention(nn.Layer):
         q = paddle.transpose(scalar_weights * q_scalar, [0, 2, 1, 3])
         k = paddle.transpose(k_scalar, [0, 2, 1, 3])
         v = paddle.transpose(v_scalar, [0, 2, 1, 3])
-        attn_qk_scalar = paddle.matmul(q, paddle.transpose(k, [0, 1, 3, 2]))
+        #attn_qk_scalar = paddle.matmul(q, paddle.transpose(k, [0, 1, 3, 2]))
+        attn_qk_scalar = paddle.matmul(q, k, transpose_y=True)
         attn_logits = attn_qk_scalar + attn_qk_point
 
         attention_2d = self.attention_2d(pair_act)

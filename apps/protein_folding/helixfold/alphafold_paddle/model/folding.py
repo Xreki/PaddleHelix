@@ -26,7 +26,6 @@ from alphafold_paddle.model import quat_affine
 from alphafold_paddle.model import r3
 from alphafold_paddle.model import utils
 from paddle.fluid.framework import _dygraph_tracer
-from utils import profile
 
 def squared_difference(x, y):
     return paddle.square(x - y)
@@ -93,7 +92,6 @@ class InvariantPointAttention(nn.Layer):
 
     def forward(self, single_act: paddle.Tensor, pair_act: paddle.Tensor,
                 mask: paddle.Tensor, affine: quat_affine.QuatAffine):
-        profile.push_profile_event(self.__class__.__name__)
         # single_act: [B, N, C]
         # pair_act: [B, N, M, C']
         # mask: [B, N, 1]
@@ -184,8 +182,7 @@ class InvariantPointAttention(nn.Layer):
         q = paddle.transpose(scalar_weights * q_scalar, [0, 2, 1, 3])
         k = paddle.transpose(k_scalar, [0, 2, 1, 3])
         v = paddle.transpose(v_scalar, [0, 2, 1, 3])
-        #attn_qk_scalar = paddle.matmul(q, paddle.transpose(k, [0, 1, 3, 2]))
-        attn_qk_scalar = paddle.matmul(q, k, transpose_y=True)
+        attn_qk_scalar = paddle.matmul(q, paddle.transpose(k, [0, 1, 3, 2]))
         attn_logits = attn_qk_scalar + attn_qk_point
 
         attention_2d = self.attention_2d(pair_act)
@@ -240,10 +237,7 @@ class InvariantPointAttention(nn.Layer):
             [result_point_local_norm, result_attention_over_2d])
 
         final_act = paddle.concat(output_features, axis=-1)
-        out = self.output_projection(final_act)
-
-        profile.pop_profile_event()
-        return out
+        return self.output_projection(final_act)
 
 
 class FoldIteration(nn.Layer):
@@ -301,7 +295,6 @@ class FoldIteration(nn.Layer):
 
     def forward(self, activations, init_single_act, static_pair_act,
                 seq_mask, aatype):
-        profile.push_profile_event(self.__class__.__name__)
         affine = quat_affine.QuatAffine.from_tensor(activations['affine'])
         act = activations['act']
 
@@ -339,7 +332,6 @@ class FoldIteration(nn.Layer):
             'act': act,
             'affine': affine.to_tensor()
         }
-        profile.pop_profile_event()
         return new_activations, outputs
 
 
@@ -366,7 +358,7 @@ class StructureModule(nn.Layer):
 
     def forward(self, representations, batch):
         """tbd."""
-        profile.push_profile_event(self.__class__.__name__)
+
         output = self._generate_affines(representations, batch)
 
         ret = dict()
@@ -402,11 +394,9 @@ class StructureModule(nn.Layer):
         # (B, N, 7)
         ret['final_affines'] = ret['traj'][-1]
 
-        profile.pop_profile_event()
         return ret
 
     def loss(self, value, batch):
-        profile.push_profile_event(self.__class__.__name__ + "/loss")
         ret = {'loss': 0.}
 
         ret['metrics'] = {}
@@ -443,7 +433,6 @@ class StructureModule(nn.Layer):
             if 'violations' not in value:
                 value['violations'] = find_structural_violations(batch, value['final_atom14_positions'], self.config)
             structural_violation_loss(ret, batch, value, self.config)
-        profile.pop_profile_event()
         return ret
 
     def _generate_affines(self, representations, batch):
@@ -859,15 +848,16 @@ def supervised_chi_loss(ret, batch, value, config):
     num_res = sequence_mask.shape[1]
     batch_size = sequence_mask.shape[0]
     chi_mask = batch['chi_mask']
-    pred_angles = paddle.reshape(value['sidechains']['angles_sin_cos'], [batch_size, -1, num_res, 7, 2])
+    pred_angles = paddle.reshape(value['sidechains']['angles_sin_cos'], [-1, batch_size, num_res, 7, 2])
+    pred_angles = pred_angles.transpose([1, 0, 2, 3, 4])
     pred_angles = pred_angles[:, :, :, 3:]
 
     residue_type_one_hot = paddle.nn.functional.one_hot(batch['aatype_index'], 
                             num_classes=residue_constants.restype_num + 1)
-    chi_pi_periodic = paddle.einsum('nijk,nkl->nijl', residue_type_one_hot[:, None, ...], 
+    chi_pi_periodic = paddle.einsum('nijk,nkl->nijl', residue_type_one_hot.unsqueeze(axis=1),
                             paddle.to_tensor(residue_constants.chi_pi_periodic)[None])
 
-    sin_cos_true_chi = batch['chi_angles_sin_cos'][:, None, ...]
+    sin_cos_true_chi = batch['chi_angles_sin_cos'].unsqueeze(axis=1) # [:, None, ...]
 
     # This is -1 if chi is pi-periodic and +1 if it's 2pi-periodic
     shifted_mask = (1 - 2 * chi_pi_periodic)[..., None]
@@ -916,7 +906,7 @@ def l2_normalize(x, axis=-1, epsilon=1e-12):
     return x / paddle.sqrt(
         paddle.maximum(
             paddle.sum(paddle.square(x), axis=axis, keepdim=True),
-            paddle.to_tensor([epsilon], dtype='float32')))
+            paddle.full(shape=[1], fill_value=epsilon, dtype='float32')))
 
 
 class MultiRigidSidechain(nn.Layer):
@@ -951,7 +941,6 @@ class MultiRigidSidechain(nn.Layer):
         self.unnormalized_angles = nn.Linear(c, 14)
 
     def forward(self, affine, single_act, init_single_act, aatype):
-        profile.push_profile_event(self.__class__.__name__)
         single_act = self.input_projection(nn.functional.relu(single_act))
         init_single_act = self.input_projection_1(
             nn.functional.relu(init_single_act))
@@ -1001,5 +990,4 @@ class MultiRigidSidechain(nn.Layer):
         #     'frames': all_frames_to_global,  # (B, N, 8, 3, 3)
         # })
 
-        profile.pop_profile_event()
         return outputs

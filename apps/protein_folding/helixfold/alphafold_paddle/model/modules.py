@@ -15,7 +15,7 @@
 """Modules."""
 
 import numpy as np
-
+import sys
 import paddle
 import paddle.nn as nn
 from paddle.fluid.framework import _dygraph_tracer
@@ -771,16 +771,23 @@ class Transition(nn.Layer):
         self.transition2 = nn.Linear(
             int(in_dim * self.config.num_intermediate_factor), in_dim,
             weight_attr=paddle.ParamAttr(initializer=last_init))
+        # self.transition2 = paddle.incubate.nn.FusedLinear(
+        #     int(in_dim * self.config.num_intermediate_factor), in_dim,
+        #     weight_attr=paddle.ParamAttr(initializer=last_init))
 
     def forward(self, act, mask):
         act = self.input_layer_norm(act)
 
         def transition_module(x):
+            # print("1: x.shape:", x.shape)
+            # print(self.transition1.weight.shape, self.transition1.bias.shape)
             x = self.transition1(x)
             x = nn.functional.relu(x)
+            # print("2: x.shape:", x.shape)
+            # print(self.transition2.weight.shape, self.transition2.bias.shape)
             x = self.transition2(x)
             return x
-
+        # print(">>>> Run here for Transition init")
         if not self.training:
             # low memory mode using subbatch
             sb_transition = subbatch(transition_module, [0], [1],
@@ -788,7 +795,7 @@ class Transition(nn.Layer):
             act = sb_transition(act)
         else:
             act = transition_module(act)
-
+        # print(">>>> Run here for Transition finish")
         return act
 
 
@@ -805,7 +812,8 @@ class MaskedMsaHead(nn.Layer):
         self.config = config
         self.global_config = global_config
         self.num_output = config.num_output
-        self.logits = nn.Linear(channel_num['msa_channel'], self.num_output, name='logits')
+        # self.logits = nn.Linear(channel_num['msa_channel'], self.num_output, name='logits')
+        self.logits = paddle.incubate.nn.FusedLinear(channel_num['msa_channel'], self.num_output, name='logits')
 
     def forward(self, representations, batch):
         """Builds MaskedMsaHead module.
@@ -847,12 +855,14 @@ class PredictedLDDTHead(nn.Layer):
 
         self.input_layer_norm = nn.LayerNorm(channel_num['seq_channel'],
                                              name='input_layer_norm')
-        self.act_0 = nn.Linear(channel_num['seq_channel'],
+        self.act_0 = paddle.incubate.nn.FusedLinear(channel_num['seq_channel'],
                                self.config.num_channels, name='act_0')
-        self.act_1 = nn.Linear(self.config.num_channels,
+        self.act_1 = paddle.incubate.nn.FusedLinear(self.config.num_channels,
                                self.config.num_channels, name='act_1')
-        self.logits = nn.Linear(self.config.num_channels,
+        self.logits = paddle.incubate.nn.FusedLinear(self.config.num_channels,
                                self.config.num_bins, name='logits')
+        # self.logits = nn.Linear(self.config.num_channels,
+        #                        self.config.num_bins, name='logits')
 
     def forward(self, representations, batch):
         """Builds PredictedLDDTHead module.
@@ -869,8 +879,18 @@ class PredictedLDDTHead(nn.Layer):
         """
         act = representations['structure_module']
         act = self.input_layer_norm(act)
+        
+        # print(">>>> success example of FusedLine start")
+        # print("x.shape : ", act.shape)
+        # print("weight.shape : ",  self.act_0.weight.shape)
+        # print("bias.shape : ",  self.act_0.bias.shape)
         act = nn.functional.relu(self.act_0(act))
+
+        # print("x.shape : ", act.shape)
+        # print("weight.shape : ",  self.act_1.weight.shape)
+        # print("bias.shape : ",  self.act_1.bias.shape)
         act = nn.functional.relu(self.act_1(act))
+        # print(">>>> success example of FusedLine finish")
         logits = self.logits(act)
 
         return dict(logits=logits)
@@ -933,8 +953,10 @@ class PredictedAlignedErrorHead(nn.Layer):
         self.config = config
         self.global_config = global_config
 
-        self.logits = nn.Linear(channel_num['pair_channel'],
-                                self.config.num_bins, name='logits')
+        # self.logits = nn.Linear(channel_num['pair_channel'],
+        #                         self.config.num_bins, name='logits')
+        self.logits = paddle.incubate.nn.FusedLinear(channel_num['pair_channel'],
+                              self.config.num_bins, name='logits')
 
     def forward(self, representations, batch):
         """Builds PredictedAlignedErrorHead module.
@@ -1021,7 +1043,8 @@ class ExperimentallyResolvedHead(nn.Layer):
         super(ExperimentallyResolvedHead, self).__init__()
         self.config = config
         self.global_config = global_config
-        self.logits = nn.Linear(channel_num['seq_channel'], 37, name='logits')
+        # self.logits = nn.Linear(channel_num['seq_channel'], 37, name='logits')
+        self.logits = paddle.incubate.nn.FusedLinear(channel_num['seq_channel'], 37, name='logits')
 
     def forward(self, representations, batch):
         """Builds ExperimentallyResolvedHead module.
@@ -1074,7 +1097,9 @@ class DistogramHead(nn.Layer):
         self.config = config
         # self.global_config = global_config
 
-        self.half_logits = nn.Linear(channel_num['pair_channel'],
+        # self.half_logits = nn.Linear(channel_num['pair_channel'],
+        #                             self.config.num_bins, name='half_logits')
+        self.half_logits = paddle.incubate.nn.FusedLinear(channel_num['pair_channel'],
                                     self.config.num_bins, name='half_logits')
         init_final_linear(self.half_logits)
 
@@ -1444,7 +1469,6 @@ class EvoformerIteration(nn.Layer):
 
         else:
             raise Error("Only support outer_product_mean_position in ['origin', 'middle', ''first', 'end'] now!")
-
         return msa_act, pair_act
 
 

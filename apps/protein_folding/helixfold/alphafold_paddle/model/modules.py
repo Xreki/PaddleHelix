@@ -15,7 +15,7 @@
 """Modules."""
 
 import numpy as np
-
+import sys
 import paddle
 import paddle.nn as nn
 from paddle.fluid.framework import _dygraph_tracer
@@ -30,8 +30,6 @@ from alphafold_paddle.model.utils import mask_mean, subbatch
 from alphafold_paddle.model import folding, lddt, quat_affine, all_atom
 from alphafold_paddle.model.utils import init_gate_linear, init_final_linear
 
-from utils import profile
-
 # Map head name in config to head name in model params
 Head_names = {
     'masked_msa': 'masked_msa_head',
@@ -41,6 +39,7 @@ Head_names = {
     'experimentally_resolved': 'experimentally_resolved_head',   # finetune loss
 }
 
+use_fused_linear_op = True
 
 def recompute_wrapper(func, *args, is_recompute=True):
     """Function wrapper for recompute"""
@@ -48,7 +47,6 @@ def recompute_wrapper(func, *args, is_recompute=True):
         return recompute(func, *args)
     else:
         return func(*args)
-
 
 def softmax_cross_entropy(logits, labels):
     """Computes softmax cross entropy given logits and one-hot class labels."""
@@ -84,19 +82,16 @@ class Dropout(nn.Layer):
             raise TypeError("datatype of axis argument should be int or list")
 
         self.p = p
+        self.axis = axis
         self.mode = mode
         self.name = name
-
-        self.axis = None
-        if axis is not None:
-            self.axis = [axis] if isinstance(axis, int) else list(axis)
 
     def forward(self, input):
         # fast return for p == 0
         if self.p == 0:
             return input
 
-        if self.axis is None: 
+        if self.axis == None: 
             out = nn.functional.dropout(input,
                             p=self.p,
                             axis=self.axis,
@@ -105,6 +100,7 @@ class Dropout(nn.Layer):
                             name=self.name)
         else:
             seed = None
+            drop_axes = [self.axis] if isinstance(self.axis, int) else list(self.axis)
             if paddle.static.default_main_program().random_seed != 0:
                 seed = paddle.static.default_main_program().random_seed
 
@@ -113,7 +109,7 @@ class Dropout(nn.Layer):
                                                     is not None, 'seed',
                                                     seed if seed is not None else 0,
                                                     'dropout_implementation', self.mode, 'axis',
-                                                    self.axis)
+                                                    drop_axes)
 
         return out
 
@@ -156,7 +152,6 @@ class AlphaFold(nn.Layer):
             predictions from the various heads.
 
         """
-        profile.push_profile_event(self.__class__.__name__)
         inner_batch, num_residues = batch['aatype'].shape[1:]
 
         def _get_prev(ret):
@@ -198,19 +193,16 @@ class AlphaFold(nn.Layer):
 
         if self.config.num_recycle:
             # aatype: (B, E, N), zeros_bn: (B, N)
-            zeros_bn = paddle.zeros_like(batch['aatype'][:, 0], dtype='float32')
+            zeros_bn_shape = batch['aatype'].shape[0:1] + batch['aatype'].shape[2:]
 
             emb_config = self.config.embeddings_and_evoformer
             prev = {
-                'prev_pos': paddle.tile(
-                    zeros_bn[..., None, None],
-                    [1, 1, residue_constants.atom_type_num, 3]),
-                'prev_msa_first_row': paddle.tile(
-                    zeros_bn[..., None],
-                    [1, 1, emb_config.msa_channel]),
-                'prev_pair': paddle.tile(
-                    zeros_bn[..., None, None],
-                    [1, 1, num_residues, emb_config.pair_channel]),
+                'prev_pos': paddle.zeros(
+                    zeros_bn_shape + [residue_constants.atom_type_num, 3], dtype="float32"),
+                'prev_msa_first_row': paddle.zeros(
+                    zeros_bn_shape + [emb_config.msa_channel], dtype="float32"),
+                'prev_pair': paddle.zeros(
+                    zeros_bn_shape + [num_residues, emb_config.pair_channel], dtype="float32"),
             }
 
             if 'num_iter_recycling' in batch:
@@ -228,9 +220,7 @@ class AlphaFold(nn.Layer):
             prev = {}
             num_iter = 0
 
-        out = _run_single_recycling(prev, num_iter, compute_loss=compute_loss)
-        profile.pop_profile_event()
-        return out
+        return _run_single_recycling(prev, num_iter, compute_loss=compute_loss)
 
 
 class AlphaFoldIteration(nn.Layer):
@@ -293,7 +283,6 @@ class AlphaFoldIteration(nn.Layer):
                 non_ensembled_batch,
                 compute_loss=False,
                 ensemble_representations=False):
-        profile.push_profile_event(self.__class__.__name__)
         num_ensemble = ensembled_batch['seq_length'].shape[1]
         if not ensemble_representations:
             assert num_ensemble == 1
@@ -395,7 +384,6 @@ class AlphaFoldIteration(nn.Layer):
         else:
             ret, total_loss = _forward_heads(representations, ret, batch0)
 
-        profile.pop_profile_event()
         if compute_loss:
             return ret, total_loss
         else:
@@ -486,7 +474,6 @@ class Attention(nn.Layer):
         Returns:
             A float32 tensor of shape [batch_size, row_size, N_queries, output_dim].
         """
-        profile.push_profile_event(self.__class__.__name__)
         if self.fuse_attention:
             if nonbatched_bias is not None:
                 nonbatched_bias = paddle.unsqueeze(nonbatched_bias, axis=1)
@@ -514,7 +501,6 @@ class Attention(nn.Layer):
 
             output = paddle.einsum('nbqhc,hco->nbqo', weighted_avg,
                                 self.output_w) + self.output_b 
-        profile.pop_profile_event()
         return output
 
 
@@ -572,7 +558,6 @@ class GlobalAttention(nn.Layer):
             default_initializer=nn.initializer.Constant(0.0))
 
     def forward(self, q_data, m_data, q_mask):
-        profile.push_profile_event(self.__class__.__name__)
         k = paddle.einsum('nbka,ac->nbkc', m_data, self.key_w)
         v = paddle.einsum('nbka,ac->nbkc', m_data, self.value_w)
 
@@ -602,7 +587,6 @@ class GlobalAttention(nn.Layer):
                                    self.output_w) + self.output_b
             output = paddle.unsqueeze(output, axis=-1)
 
-        profile.pop_profile_event()
         return output
 
 
@@ -643,7 +627,7 @@ class MSARowAttentionWithPairBias(nn.Layer):
                 msa_channel, msa_channel, msa_channel)
 
     def forward(self, msa_act, msa_mask, pair_act):
-        profile.push_profile_event(self.__class__.__name__)
+
         pair_act = self.feat_2d_norm(pair_act)
         
         nonbatched_bias = paddle.einsum(
@@ -664,7 +648,6 @@ class MSARowAttentionWithPairBias(nn.Layer):
         else:
             msa_act = self.attention(msa_act, msa_act, bias, nonbatched_bias)
 
-        profile.pop_profile_event()
         return msa_act
 
 
@@ -688,7 +671,7 @@ class MSAColumnGlobalAttention(nn.Layer):
             extra_msa_channel, extra_msa_channel, extra_msa_channel)
 
     def forward(self, msa_act, msa_mask):
-        profile.push_profile_event(self.__class__.__name__)
+
         msa_act = paddle.transpose(msa_act, [0, 2, 1, 3])
         msa_mask = paddle.transpose(msa_mask, [0, 2, 1])
 
@@ -707,7 +690,6 @@ class MSAColumnGlobalAttention(nn.Layer):
             msa_act = self.attention(msa_act, msa_act, msa_mask)
 
         msa_act = paddle.transpose(msa_act, [0, 2, 1, 3])
-        profile.pop_profile_event()
         return msa_act
 
 
@@ -731,7 +713,6 @@ class MSAColumnAttention(nn.Layer):
             msa_channel, msa_channel, msa_channel)
 
     def forward(self, msa_act, msa_mask):
-        profile.push_profile_event(self.__class__.__name__)
 
         msa_act = paddle.transpose(msa_act, [0, 2, 1, 3])
         msa_mask = paddle.transpose(msa_mask, [0, 2, 1])
@@ -749,7 +730,6 @@ class MSAColumnAttention(nn.Layer):
             msa_act = self.attention(msa_act, msa_act, bias)
 
         msa_act = paddle.transpose(msa_act, [0, 2, 1, 3])
-        profile.pop_profile_event()
         return msa_act
 
 
@@ -778,7 +758,7 @@ class Transition(nn.Layer):
             in_dim = channel_num['pair_channel']
 
         self.input_layer_norm = nn.LayerNorm(in_dim)
-        self.transition1 = nn.Linear(
+        self.transition1 = paddle.incubate.nn.FusedLinear(
             in_dim, int(in_dim * self.config.num_intermediate_factor),
             weight_attr=paddle.ParamAttr(
                 initializer=nn.initializer.KaimingNormal()))
@@ -788,20 +768,26 @@ class Transition(nn.Layer):
         else:
             last_init = nn.initializer.TruncatedNormal()
 
-        self.transition2 = nn.Linear(
+        self.transition2 = paddle.incubate.nn.FusedLinear(
             int(in_dim * self.config.num_intermediate_factor), in_dim,
             weight_attr=paddle.ParamAttr(initializer=last_init))
+        # self.transition2 = paddle.incubate.nn.FusedLinear(
+        #     int(in_dim * self.config.num_intermediate_factor), in_dim,
+        #     weight_attr=paddle.ParamAttr(initializer=last_init))
 
     def forward(self, act, mask):
-        profile.push_profile_event(self.__class__.__name__)
         act = self.input_layer_norm(act)
 
         def transition_module(x):
+            # print("1: x.shape:", x.shape)
+            # print(self.transition1.weight.shape, self.transition1.bias.shape)
             x = self.transition1(x)
             x = nn.functional.relu(x)
+            # print("2: x.shape:", x.shape)
+            # print(self.transition2.weight.shape, self.transition2.bias.shape)
             x = self.transition2(x)
             return x
-
+        # print(">>>> Run here for Transition init")
         if not self.training:
             # low memory mode using subbatch
             sb_transition = subbatch(transition_module, [0], [1],
@@ -809,8 +795,7 @@ class Transition(nn.Layer):
             act = sb_transition(act)
         else:
             act = transition_module(act)
-
-        profile.pop_profile_event()
+        # print(">>>> Run here for Transition finish")
         return act
 
 
@@ -827,7 +812,10 @@ class MaskedMsaHead(nn.Layer):
         self.config = config
         self.global_config = global_config
         self.num_output = config.num_output
-        self.logits = nn.Linear(channel_num['msa_channel'], self.num_output, name='logits')
+
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+        self.logits = Linear(channel_num['msa_channel'], self.num_output, name='logits')
 
     def forward(self, representations, batch):
         """Builds MaskedMsaHead module.
@@ -842,20 +830,16 @@ class MaskedMsaHead(nn.Layer):
             * 'logits': logits of shape [batch, N_seq, N_res, N_aatype] with
                 (unnormalized) log probabilies of predicted aatype at position.
         """
-        profile.push_profile_event(self.__class__.__name__)
         del batch
         logits = self.logits(representations['msa'])
-        profile.pop_profile_event()
         return {'logits': logits}
 
     def loss(self, value, batch):
-        profile.push_profile_event(self.__class__.__name__ + "/loss")
         errors = softmax_cross_entropy(
             labels=paddle.nn.functional.one_hot(batch['true_msa'], num_classes=self.num_output),
             logits=value['logits'])
         loss = (paddle.sum(errors * paddle.cast(batch['bert_mask'], dtype=errors.dtype), axis=[-2, -1]) /
                 (1e-8 + paddle.sum(batch['bert_mask'], axis=[-2, -1])))
-        profile.pop_profile_event()
         return {'loss': loss}
 
 
@@ -871,13 +855,16 @@ class PredictedLDDTHead(nn.Layer):
         self.config = config
         self.global_config = global_config
 
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+
         self.input_layer_norm = nn.LayerNorm(channel_num['seq_channel'],
                                              name='input_layer_norm')
-        self.act_0 = nn.Linear(channel_num['seq_channel'],
+        self.act_0 = Linear(channel_num['seq_channel'],
                                self.config.num_channels, name='act_0')
-        self.act_1 = nn.Linear(self.config.num_channels,
+        self.act_1 = Linear(self.config.num_channels,
                                self.config.num_channels, name='act_1')
-        self.logits = nn.Linear(self.config.num_channels,
+        self.logits = Linear(self.config.num_channels,
                                self.config.num_bins, name='logits')
 
     def forward(self, representations, batch):
@@ -895,14 +882,23 @@ class PredictedLDDTHead(nn.Layer):
         """
         act = representations['structure_module']
         act = self.input_layer_norm(act)
+        
+        # print(">>>> success example of FusedLine start")
+        # print("x.shape : ", act.shape)
+        # print("weight.shape : ",  self.act_0.weight.shape)
+        # print("bias.shape : ",  self.act_0.bias.shape)
         act = nn.functional.relu(self.act_0(act))
+
+        # print("x.shape : ", act.shape)
+        # print("weight.shape : ",  self.act_1.weight.shape)
+        # print("bias.shape : ",  self.act_1.bias.shape)
         act = nn.functional.relu(self.act_1(act))
+        # print(">>>> success example of FusedLine finish")
         logits = self.logits(act)
 
         return dict(logits=logits)
 
     def loss(self, value, batch):
-        profile.push_profile_event(self.__class__.__name__ + "/loss")
         # Shape (n_batch, num_res, 37, 3)
         pred_all_atom_pos = value['structure_module']['final_atom_positions']
         # Shape (n_batch, num_res, 37, 3)
@@ -927,7 +923,7 @@ class PredictedLDDTHead(nn.Layer):
         bin_index = paddle.floor(lddt_ca * num_bins)
 
         # protect against out of range for lddt_ca == 1
-        bin_index = paddle.minimum(bin_index, paddle.to_tensor(num_bins - 1, dtype='float32'))
+        bin_index = paddle.minimum(bin_index, paddle.full(shape=[1], fill_value=num_bins - 1, dtype='float32'))
         lddt_ca_one_hot = paddle.nn.functional.one_hot(paddle.cast(bin_index, 'int64'), num_classes=num_bins)
 
         # Shape (n_batch, num_res, num_channel)
@@ -945,7 +941,6 @@ class PredictedLDDTHead(nn.Layer):
             loss *= paddle.cast((resolution >= self.config.min_resolution)
                     & (resolution <= self.config.max_resolution), 'float32')
         output = {'loss': loss}
-        profile.pop_profile_event()
         return output
 
 
@@ -961,8 +956,9 @@ class PredictedAlignedErrorHead(nn.Layer):
         self.config = config
         self.global_config = global_config
 
-        self.logits = nn.Linear(channel_num['pair_channel'],
-                                self.config.num_bins, name='logits')
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+        self.logits = Linear(channel_num['pair_channel'], self.config.num_bins, name='logits')
 
     def forward(self, representations, batch):
         """Builds PredictedAlignedErrorHead module.
@@ -977,16 +973,13 @@ class PredictedAlignedErrorHead(nn.Layer):
                 * logits: logits for aligned error, shape [B, N_res, N_res, N_bins].
                 * bin_breaks: array containing bin breaks, shape [N_bins - 1].
         """
-        profile.push_profile_event(self.__class__.__name__)
         logits = self.logits(representations['pair'])
         breaks = paddle.linspace(0., self.config.max_error_bin,
                                  self.config.num_bins-1)
 
-        profile.pop_profile_event()
         return dict(logits=logits, breaks=breaks)
 
     def loss(self, value, batch):
-        profile.push_profile_event(self.__class__.__name__ + "/loss")
         # Shape (B, num_res, 7)
         predicted_affine = quat_affine.QuatAffine.from_tensor(
             value['structure_module']['final_affines'])
@@ -1000,7 +993,8 @@ class PredictedAlignedErrorHead(nn.Layer):
         # Shape (B, num_res)
         mask = batch['backbone_affine_mask']
         # Shape (B, num_res, num_res)
-        square_mask = mask[..., None] * mask[:, None, :]
+        # mask[..., None] * mask[:, None, :]
+        square_mask = mask.unsqueeze(axis=-1) * mask.squeeze(axis=-2)
         num_bins = self.config.num_bins
         # (num_bins - 1)
         breaks = value['predicted_aligned_error']['breaks']
@@ -1022,7 +1016,7 @@ class PredictedAlignedErrorHead(nn.Layer):
         error_dist2 = error_dist2.detach()
 
         sq_breaks = paddle.square(breaks)
-        true_bins = paddle.sum(paddle.cast((error_dist2[..., None] > sq_breaks), 'int32'), axis=-1)
+        true_bins = paddle.sum(paddle.cast((error_dist2.unsqueeze(axis=-1) > sq_breaks), 'int32'), axis=-1)
 
         errors = softmax_cross_entropy(
             labels=paddle.nn.functional.one_hot(true_bins, num_classes=num_bins), logits=logits)
@@ -1036,7 +1030,6 @@ class PredictedAlignedErrorHead(nn.Layer):
             loss *= paddle.cast((resolution >= self.config.min_resolution)
                     & (resolution <= self.config.max_resolution), 'float32')
 
-        profile.pop_profile_event()
         output = {'loss': loss}
         return output
 
@@ -1052,7 +1045,11 @@ class ExperimentallyResolvedHead(nn.Layer):
         super(ExperimentallyResolvedHead, self).__init__()
         self.config = config
         self.global_config = global_config
-        self.logits = nn.Linear(channel_num['seq_channel'], 37, name='logits')
+
+
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+        self.logits = Linear(channel_num['seq_channel'], 37, name='logits')
 
     def forward(self, representations, batch):
         """Builds ExperimentallyResolvedHead module.
@@ -1068,13 +1065,10 @@ class ExperimentallyResolvedHead(nn.Layer):
                 log probability that an atom is resolved in atom37 representation,
                 can be converted to probability by applying sigmoid.
         """
-        profile.push_profile_event(self.__class__.__name__)
         logits = self.logits(representations['single'])
-        profile.pop_profile_event()
         return dict(logits=logits)
 
     def loss(self, value, batch):
-        profile.push_profile_event(self.__class__.__name__ + "/loss")
         logits = value['logits']
         assert len(logits.shape) == 3
 
@@ -1093,7 +1087,6 @@ class ExperimentallyResolvedHead(nn.Layer):
             loss *= paddle.cast((resolution >= self.config.min_resolution)
                     & (resolution <= self.config.max_resolution), 'float32')
 
-        profile.pop_profile_event()
         output = {'loss': loss}
         return output
 
@@ -1109,8 +1102,10 @@ class DistogramHead(nn.Layer):
         self.config = config
         # self.global_config = global_config
 
-        self.half_logits = nn.Linear(channel_num['pair_channel'],
-                                    self.config.num_bins, name='half_logits')
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+        self.half_logits = Linear(channel_num['pair_channel'],self.config.num_bins, name='half_logits')
+
         init_final_linear(self.half_logits)
 
     def forward(self, representations, batch):
@@ -1125,26 +1120,20 @@ class DistogramHead(nn.Layer):
             * logits: logits for distogram, shape [batch, N_res, N_res, N_bins].
             * bin_breaks: array containing bin breaks, shape [batch, N_bins - 1].
         """
-        profile.push_profile_event(self.__class__.__name__)
         half_logits = self.half_logits(representations['pair'])
 
         logits = half_logits + paddle.transpose(half_logits, perm=[0, 2, 1, 3])
         breaks = paddle.linspace(self.config.first_break, self.config.last_break,
                           self.config.num_bins - 1)
-        breaks = paddle.tile(breaks[None, :],
-                            repeat_times=[logits.shape[0], 1])
+        breaks = paddle.broadcast_to(breaks, [logits.shape[0]] + breaks.shape)
 
-        profile.pop_profile_event()
         return {
             'logits': logits, 
             'bin_edges': breaks}
 
     def loss(self, value, batch):
-        profile.push_profile_event(self.__class__.__name__ + "/loss")
-        out = _distogram_log_loss(value['logits'], value['bin_edges'],
+        return _distogram_log_loss(value['logits'], value['bin_edges'],
                                batch, self.config.num_bins)
-        profile.pop_profile_event()
-        return out
 
 
 def _distogram_log_loss(logits, bin_edges, batch, num_bins):
@@ -1183,7 +1172,7 @@ def dgram_from_positions(positions, num_bins, min_bin, max_bin):
     lower_breaks = paddle.linspace(min_bin, max_bin, num_bins)
     lower_breaks = paddle.square(lower_breaks)
     upper_breaks = paddle.concat([lower_breaks[1:],
-                                    paddle.to_tensor([1e8], dtype='float32')])
+        paddle.full(shape=[1], fill_value=1e8, dtype='float32')])
 
     def _squared_difference(x, y):
         return paddle.square(x - y)
@@ -1197,7 +1186,6 @@ def dgram_from_positions(positions, num_bins, min_bin, max_bin):
     dgram = ((dist2 > lower_breaks.astype(dist2.dtype)).astype('float32') *
                 (dist2 < upper_breaks.astype(dist2.dtype)).astype('float32'))
     return dgram
-
 
 class EvoformerIteration(nn.Layer):
     """Single iteration (block) of Evoformer stack.
@@ -1474,7 +1462,6 @@ class EvoformerIteration(nn.Layer):
         return msa_act, pair_act
 
     def forward(self, msa_act, pair_act, masks):
-        profile.push_profile_event(self.__class__.__name__)
 
         if self.global_config.outer_product_mean_position in ['origin', 'middle']:
             msa_act, pair_act = self.outer_product_mean_origin(msa_act, pair_act, masks)
@@ -1487,8 +1474,6 @@ class EvoformerIteration(nn.Layer):
 
         else:
             raise Error("Only support outer_product_mean_position in ['origin', 'middle', ''first', 'end'] now!")
-
-        profile.pop_profile_event()
         return msa_act, pair_act
 
 
@@ -1508,27 +1493,31 @@ class EmbeddingsAndEvoformer(nn.Layer):
         # InputEmbedder
         # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 5
         # Jumper et al. (2021) Suppl. Alg. 3 "InputEmbedder"
-        self.preprocess_1d = nn.Linear(channel_num['target_feat'],
+        
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+
+        self.preprocess_1d = Linear(channel_num['target_feat'],
                                        self.config.msa_channel, name='preprocess_1d')
-        self.preprocess_msa = nn.Linear(channel_num['msa_feat'],
+        self.preprocess_msa = Linear(channel_num['msa_feat'],
                                         self.config.msa_channel, name='preprocess_msa')
-        self.left_single = nn.Linear(channel_num['target_feat'], self.config.pair_channel,
+        self.left_single = Linear(channel_num['target_feat'], self.config.pair_channel,
                                      name='left_single')
-        self.right_single = nn.Linear(channel_num['target_feat'], self.config.pair_channel,
+        self.right_single = Linear(channel_num['target_feat'], self.config.pair_channel,
                                       name='right_single')
 
         # RecyclingEmbedder
         # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 6
         # Jumper et al. (2021) Suppl. Alg. 32 "RecyclingEmbedder"
         if self.config.recycle_pos:
-            self.prev_pos_linear = nn.Linear(self.config.prev_pos.num_bins,
+            self.prev_pos_linear = Linear(self.config.prev_pos.num_bins,
                                              self.config.pair_channel)
 
         # RelPosEmbedder
         # Jumper et al. (2021) Suppl. Alg. 4 "relpos"
         # Jumper et al. (2021) Suppl. Alg. 5 "one_hot"
         if self.config.max_relative_feature:
-            self.pair_activiations = nn.Linear(
+            self.pair_activiations = Linear(
                 2 * self.config.max_relative_feature + 1,
                 self.config.pair_channel)
 
@@ -1547,7 +1536,7 @@ class EmbeddingsAndEvoformer(nn.Layer):
 
         # ExtraMSAEmbedder
         # Jumper et al. (2021) Suppl. Alg. 2 "Inference" lines 14-16
-        self.extra_msa_activations = nn.Linear(
+        self.extra_msa_activations = Linear(
             25,  # 23 (20aa+unknown+gap+mask) + 1 (has_del) + 1 (del_val)
             self.config.extra_msa_channel)
 
@@ -1562,9 +1551,9 @@ class EmbeddingsAndEvoformer(nn.Layer):
         # Embed templates torsion angles
         if self.config.template.enabled and self.config.template.embed_torsion_angles:
             c = self.config.msa_channel
-            self.template_single_embedding = nn.Linear(
+            self.template_single_embedding = Linear(
                 self.channel_num['template_angle'], c)
-            self.template_projection = nn.Linear(c, c)
+            self.template_projection = Linear(c, c)
 
         # Main trunk of the network
         # Jumper et al. (2021) Suppl. Alg. 2 "Inference" lines 17-18
@@ -1574,7 +1563,7 @@ class EmbeddingsAndEvoformer(nn.Layer):
                 self.channel_num, self.config.evoformer, self.global_config,
                 is_extra_msa=False))
 
-        self.single_activations = nn.Linear(
+        self.single_activations = Linear(
             self.config.msa_channel, self.config.seq_channel)
 
     def _pseudo_beta_fn(self, aatype, all_atom_positions, all_atom_masks):
@@ -1619,7 +1608,6 @@ class EmbeddingsAndEvoformer(nn.Layer):
         return paddle.concat(msa_feat, axis=-1)
 
     def forward(self, batch):
-        profile.push_profile_event(self.__class__.__name__)
         # InputEmbedder
         # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 5
         # Jumper et al. (2021) Suppl. Alg. 3 "InputEmbedder"
@@ -1799,7 +1787,6 @@ class EmbeddingsAndEvoformer(nn.Layer):
             'msa_first_row': msa_activations[:, 0],
         }
 
-        profile.pop_profile_event()
         return output
 
 
@@ -1820,10 +1807,13 @@ class OuterProductMean(nn.Layer):
         else:
             c_m = channel_num['msa_channel']
 
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+
         self.layer_norm_input = nn.LayerNorm(c_m, name='layer_norm_input')
-        self.left_projection = nn.Linear(
+        self.left_projection = Linear(
             c_m, self.config.num_outer_channel, name='left_projection')
-        self.right_projection = nn.Linear(
+        self.right_projection = Linear(
             c_m, self.config.num_outer_channel, name='right_projection')
 
         if self.global_config.zero_init:
@@ -1848,8 +1838,6 @@ class OuterProductMean(nn.Layer):
         Returns:
         Update to pair representation, shape [batch, N_res, N_res, c_z].
         """
-
-        profile.push_profile_event(self.__class__.__name__)
         
         act = self.layer_norm_input(act)
         right_act = self.right_projection(act)
@@ -1871,7 +1859,15 @@ class OuterProductMean(nn.Layer):
             # but faster. maybe for subbatch inference?
             
             left_act = left_act.transpose([0, 1, 3, 2])
-            act = paddle.einsum('nacb,nade->ndceb', left_act, right_act)
+            # act = paddle.einsum('nacb,nade->ndceb', left_act, right_act)
+            tmp = paddle.matmul(
+                x=paddle.reshape(right_act, [right_act.shape[0], right_act.shape[1], -1]),  # na(de)
+                y=paddle.reshape(left_act, [left_act.shape[0], left_act.shape[1], -1]),     # na(cb)
+                transpose_x=True,
+                transpose_y=False)  # n(de)(cb)
+            tmp = paddle.reshape(tmp, [left_act.shape[0], right_act.shape[2], right_act.shape[3], left_act.shape[2], left_act.shape[3]])
+            act = paddle.transpose(tmp, perm=[0, 1, 3, 2, 4])
+ 
             act = paddle.einsum('ndceb,cef->ndbf', act, self.output_w) + self.output_b
             return act.transpose([0, 2, 1, 3])
 
@@ -1885,7 +1881,6 @@ class OuterProductMean(nn.Layer):
 
         act = act / norm
 
-        profile.pop_profile_event()
         return act
 
 
@@ -1926,8 +1921,6 @@ class TriangleAttention(nn.Layer):
         Returns:
         Update to pair_act, shape [batch, N_res, N_res, c_z].
         """
-        profile.push_profile_event(self.__class__.__name__)
-
         if self.config.orientation == 'per_column':
             pair_act = pair_act.transpose([0, 2, 1, 3])
             pair_mask = pair_mask.transpose([0, 2, 1])
@@ -1950,7 +1943,6 @@ class TriangleAttention(nn.Layer):
         if self.config.orientation == 'per_column':
             pair_act = pair_act.transpose([0, 2, 1, 3])
 
-        profile.pop_profile_event()
         return pair_act
 
 
@@ -1967,25 +1959,28 @@ class TriangleMultiplication(nn.Layer):
         self.config = config
         self.global_config = global_config
 
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+
         self.layer_norm_input = nn.LayerNorm(self.channel_num['pair_channel'], name='layer_norm_input')
-        self.left_projection = nn.Linear(self.channel_num['pair_channel'],
+        self.left_projection = Linear(self.channel_num['pair_channel'],
                                 self.config.num_intermediate_channel, name='left_projection')
-        self.right_projection = nn.Linear(self.channel_num['pair_channel'],
+        self.right_projection = Linear(self.channel_num['pair_channel'],
                                 self.config.num_intermediate_channel, name='right_projection')
-        self.left_gate = nn.Linear(self.channel_num['pair_channel'],
+        self.left_gate = Linear(self.channel_num['pair_channel'],
                                 self.config.num_intermediate_channel, name='left_gate')
         init_gate_linear(self.left_gate)
-        self.right_gate = nn.Linear(self.channel_num['pair_channel'],
+        self.right_gate = Linear(self.channel_num['pair_channel'],
                                 self.config.num_intermediate_channel, name='right_gate')
         init_gate_linear(self.right_gate)
 
         # line 4
         self.center_layer_norm = nn.LayerNorm(self.config.num_intermediate_channel, name='center_layer_norm')
-        self.output_projection = nn.Linear(self.config.num_intermediate_channel,
+        self.output_projection = Linear(self.config.num_intermediate_channel,
                                     self.channel_num['pair_channel'], name='output_projection')
         init_final_linear(self.output_projection)
         # line 3
-        self.gating_linear = nn.Linear(self.channel_num['pair_channel'],
+        self.gating_linear = Linear(self.channel_num['pair_channel'],
                                     self.channel_num['pair_channel'], name='output_projection')
         init_gate_linear(self.gating_linear)
 
@@ -1999,7 +1994,6 @@ class TriangleMultiplication(nn.Layer):
         Returns:
         Outputs, same shape/type as act.
         """
-        profile.push_profile_event(self.__class__.__name__)
         mask = paddle.unsqueeze(mask, axis=-1) # [batch, N_res, N_res, 1]
 
         act = self.layer_norm_input(act) # line 1
@@ -2049,7 +2043,6 @@ class TriangleMultiplication(nn.Layer):
 
         act = act * gate_values
 
-        profile.pop_profile_event()
         return act
 
 
@@ -2135,7 +2128,6 @@ class TemplatePair(nn.Layer):
         Updated pair_act, shape [batch, N_res, N_res, c_t].
         """
 
-        profile.push_profile_event(self.__class__.__name__)
         residual = self.triangle_attention_starting_node(pair_act, pair_mask)
         residual = self.triangle_starting_dropout(residual)
         pair_act = pair_act + residual
@@ -2156,7 +2148,6 @@ class TemplatePair(nn.Layer):
         residual = self.pair_transition_dropout(residual)
         pair_act = pair_act + residual
 
-        profile.pop_profile_event()
         return pair_act
 
 
@@ -2171,7 +2162,9 @@ class SingleTemplateEmbedding(nn.Layer):
         self.channel_num = channel_num
         self.global_config = global_config
 
-        self.embedding2d = nn.Linear(channel_num['template_pair'],
+        global use_fused_linear_op
+        Linear = paddle.incubate.nn.FusedLinear if use_fused_linear_op else nn.Linear
+        self.embedding2d = Linear(channel_num['template_pair'],
             self.config.template_pair_stack.triangle_attention_ending_node.value_dim)
 
         self.template_pair_stack = nn.LayerList()
@@ -2194,12 +2187,12 @@ class SingleTemplateEmbedding(nn.Layer):
         Returns:
             A template embedding [N_res, N_res, c_z].
         """
-        profile.push_profile_event(self.__class__.__name__)
         assert mask_2d.dtype == query_embedding.dtype
         dtype = query_embedding.dtype
         num_res = batch['template_aatype'].shape[1]
         template_mask = batch['template_pseudo_beta_mask']
-        template_mask_2d = template_mask[..., None] * template_mask[..., None, :]
+        # template_mask[..., None] * template_mask[..., None, :]
+        template_mask_2d = template_mask.unsqueeze(axis=-1) * template_mask.unsqueeze(axis=-2)
         template_mask_2d = template_mask_2d.astype(dtype)
 
         template_dgram = dgram_from_positions(
@@ -2210,10 +2203,10 @@ class SingleTemplateEmbedding(nn.Layer):
         aatype = nn.functional.one_hot(batch['template_aatype'], 22)
         aatype = aatype.astype(dtype)
 
-        to_concat = [template_dgram, template_mask_2d[..., None]]
-        to_concat.append(paddle.tile(aatype[..., None, :, :],
+        to_concat = [template_dgram, template_mask_2d.unsqueeze(axis=-1)]
+        to_concat.append(paddle.tile(aatype.unsqueeze(axis=-3), # aatype[..., None, :, :],
                                      [1, num_res, 1, 1]))
-        to_concat.append(paddle.tile(aatype[..., None, :],
+        to_concat.append(paddle.tile(aatype.unsqueeze(axis=-2), # aatype[..., None, :],
                                      [1, 1, num_res, 1]))
 
         n, ca, c = [residue_constants.atom_order[a]
@@ -2239,22 +2232,23 @@ class SingleTemplateEmbedding(nn.Layer):
             batch['template_all_atom_masks'][..., n] *
             batch['template_all_atom_masks'][..., ca] *
             batch['template_all_atom_masks'][..., c])
-        template_mask_2d = template_mask[..., None] * template_mask[..., None, :]
+        # template_mask[..., None] * template_mask[..., None, :]
+        template_mask_2d = template_mask.unsqueeze(axis=-1) * template_mask.unsqueeze(axis=-2)
         inv_distance_scalar *= template_mask_2d.astype(inv_distance_scalar.dtype)
 
-        unit_vector = [(x * inv_distance_scalar)[..., None] for x in affine_vec]
+        unit_vector = [(x * inv_distance_scalar).unsqueeze(axis=-1) for x in affine_vec]
         unit_vector = [x.astype(dtype) for x in unit_vector]
         if not self.config.use_template_unit_vector:
             unit_vector = [paddle.zeros_like(x) for x in unit_vector]
         to_concat.extend(unit_vector)
 
         template_mask_2d = template_mask_2d.astype(dtype)
-        to_concat.append(template_mask_2d[..., None])
+        to_concat.append(template_mask_2d.unsqueeze(axis=-1))
 
         act = paddle.concat(to_concat, axis=-1)
         # Mask out non-template regions so we don't get arbitrary values in the
         # distogram for these regions.
-        act *= template_mask_2d[..., None]
+        act *= template_mask_2d.unsqueeze(axis=-1)
 
         act = self.embedding2d(act)
 
@@ -2263,7 +2257,6 @@ class SingleTemplateEmbedding(nn.Layer):
                 is_recompute=self.training and idx >= self.config.template_pair_stack.recompute_start_block_index)
 
         act = self.output_layer_norm(act)
-        profile.pop_profile_event()
         return act
 
 
@@ -2300,7 +2293,6 @@ class TemplateEmbedding(nn.Layer):
             A template embedding [n_batch, N_res, N_res, c_z].
         """
 
-        profile.push_profile_event(self.__class__.__name__)
         num_templates = template_batch['template_mask'].shape[1]
 
         num_channels = (self.config.template_pair_stack
@@ -2345,5 +2337,4 @@ class TemplateEmbedding(nn.Layer):
 
         # No gradients if no templates.
         emb *= (paddle.sum(template_mask) > 0.).astype(emb.dtype)
-        profile.pop_profile_event()
         return emb

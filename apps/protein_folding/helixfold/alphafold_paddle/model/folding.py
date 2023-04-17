@@ -26,6 +26,7 @@ from alphafold_paddle.model import quat_affine
 from alphafold_paddle.model import r3
 from alphafold_paddle.model import utils
 from paddle.fluid.framework import _dygraph_tracer
+from utils import profile
 
 def squared_difference(x, y):
     return paddle.square(x - y)
@@ -92,6 +93,7 @@ class InvariantPointAttention(nn.Layer):
 
     def forward(self, single_act: paddle.Tensor, pair_act: paddle.Tensor,
                 mask: paddle.Tensor, affine: quat_affine.QuatAffine):
+        profile.push_profile_event(self.__class__.__name__)
         # single_act: [B, N, C]
         # pair_act: [B, N, M, C']
         # mask: [B, N, 1]
@@ -237,7 +239,10 @@ class InvariantPointAttention(nn.Layer):
             [result_point_local_norm, result_attention_over_2d])
 
         final_act = paddle.concat(output_features, axis=-1)
-        return self.output_projection(final_act)
+        out = self.output_projection(final_act)
+
+        profile.pop_profile_event()
+        return out
 
 
 class FoldIteration(nn.Layer):
@@ -295,6 +300,7 @@ class FoldIteration(nn.Layer):
 
     def forward(self, activations, init_single_act, static_pair_act,
                 seq_mask, aatype):
+        profile.push_profile_event(self.__class__.__name__)
         affine = quat_affine.QuatAffine.from_tensor(activations['affine'])
         act = activations['act']
 
@@ -332,6 +338,7 @@ class FoldIteration(nn.Layer):
             'act': act,
             'affine': affine.to_tensor()
         }
+        profile.pop_profile_event()
         return new_activations, outputs
 
 
@@ -358,7 +365,7 @@ class StructureModule(nn.Layer):
 
     def forward(self, representations, batch):
         """tbd."""
-
+        profile.push_profile_event(self.__class__.__name__)
         output = self._generate_affines(representations, batch)
 
         ret = dict()
@@ -394,9 +401,11 @@ class StructureModule(nn.Layer):
         # (B, N, 7)
         ret['final_affines'] = ret['traj'][-1]
 
+        profile.pop_profile_event()
         return ret
 
     def loss(self, value, batch):
+        profile.push_profile_event(self.__class__.__name__ + "/loss")
         ret = {'loss': 0.}
 
         ret['metrics'] = {}
@@ -433,6 +442,7 @@ class StructureModule(nn.Layer):
             if 'violations' not in value:
                 value['violations'] = find_structural_violations(batch, value['final_atom14_positions'], self.config)
             structural_violation_loss(ret, batch, value, self.config)
+        profile.pop_profile_event()
         return ret
 
     def _generate_affines(self, representations, batch):
@@ -940,6 +950,7 @@ class MultiRigidSidechain(nn.Layer):
         self.unnormalized_angles = nn.Linear(c, 14)
 
     def forward(self, affine, single_act, init_single_act, aatype):
+        profile.push_profile_event(self.__class__.__name__)
         single_act = self.input_projection(nn.functional.relu(single_act))
         init_single_act = self.input_projection_1(
             nn.functional.relu(init_single_act))
@@ -989,4 +1000,5 @@ class MultiRigidSidechain(nn.Layer):
         #     'frames': all_frames_to_global,  # (B, N, 8, 3, 3)
         # })
 
+        profile.pop_profile_event()
         return outputs

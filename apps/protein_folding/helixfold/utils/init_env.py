@@ -16,8 +16,11 @@ import numpy as np
 import random
 import paddle
 
-from ppfleetx.distributed.protein_folding import dp
-from ppfleetx.distributed.protein_folding.scg import scg
+try:
+    from ppfleetx.distributed.protein_folding import dp
+    from ppfleetx.distributed.protein_folding.scg import scg
+except Exception as ex:
+    print(f'Fail to import ppfleetx: {ex}')
 
 def init_seed(seed):
     """ set seed for reproduct results"""

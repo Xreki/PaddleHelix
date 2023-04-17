@@ -23,7 +23,10 @@ import paddle.distributed as dist
 
 from alphafold_paddle.common import protein
 from utils.utils import tree_map, tree_flatten, tree_filter
-from ppfleetx.distributed.protein_folding import dp
+try:
+    from ppfleetx.distributed.protein_folding import dp
+except Exception as ex:
+    print(f'Fail to import ppfleetx: {ex}')
 
 
 def dist_all_reduce(x, return_num=False, distributed=False):

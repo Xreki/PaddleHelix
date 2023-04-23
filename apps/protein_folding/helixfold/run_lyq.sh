@@ -1,10 +1,10 @@
 #!/bin/bash
 
 unset PADDLE_TRAINER_ENDPOINTS
-export CUDA_VISIBLE_DEVICES="7"
+export CUDA_VISIBLE_DEVICES="4"
 
 precision=${1:-"bf16"}
-amp_level=${2:-"O2"}
+amp_level=${2:-"O1"}
 
 MY_PYTHON_BIN=`which python`
 
@@ -19,7 +19,6 @@ LDDT_SCORE_BIN=$root_path/tools/lddt
 
 # disable C++ enisum, using python enisum
 #export FLAGS_new_einsum=0
-export FLAGS_enable_eager_mode=1
 export FLAGS_use_autotune=1
 #export FLAGS_check_nan_inf=1
 
@@ -40,8 +39,7 @@ chmod +x $LDDT_SCORE_BIN
 #export FLAGS_enable_gpu_memory_usage_log=1
 
 train_af2() {
-    start_step=5
-    train_step=105
+    start_step=0
     # distributed_args="-m paddle.distributed.launch --log_dir ./log/$exp_name"
 
     #profiler_type="native"
@@ -49,14 +47,25 @@ train_af2() {
     #profiler_type="nvprof"
     #profiler_type="debug"
     if [ "${profiler_type}" = "" ]; then
-      profiler_type="none"
+        profiler_type="none"
+        train_step=105
+    else
+        train_step=35
     fi
     use_saved_train_batch="--use_saved_train_batch"
-    output_filename=protein_folding.bs${batch_size}.${precision}.${profiler_type}
+    if [ "${precision}" = "bf16" ]; then
+      if [ "${amp_level}" = "O2" ]; then
+        output_filename=helixfold.bs${batch_size}.${precision}_o2.${profiler_type}
+      elif [ "${amp_level}" = "O1" ]; then
+        output_filename=helixfold.bs${batch_size}.${precision}_o1.${profiler_type}
+      fi
+    else
+      output_filename=helixfold.bs${batch_size}.${precision}.${profiler_type}
+    fi
     if [ "${use_saved_train_batch}" != "" ]; then
         output_filename=${output_filename}.use_saved_data
     fi
-    output_filename=${output_filename}.dev20221201
+    output_filename=${output_filename}.flashattn.dev20230419
 
     if [ "${profiler_type}" = "nvprof" ]; then
         export PATH=/opt/nvidia/nsight-systems/2022.5.1/bin:$PATH
@@ -96,10 +105,10 @@ train_af2() {
             --bp_degree=${bp_degree} \
             --num_workers 6 \
             --seed 2022 \
-            --logging_level="NOTSET" \
+            --logging_level="DEBUG" \
             --model_dir="./models" \
             --log_dir="./outputs" \
-            --profiler_type=${profiler_type} ${use_saved_train_batch} | tee log_${output_filename}.txt 2>&1
+            --profiler_type=${profiler_type} ${use_saved_train_batch} 2>&1 | tee log_${output_filename}.txt
 
     if [ "${collect_gpu_status}" = "True" ]; then
         kill ${gpu_query_pid}

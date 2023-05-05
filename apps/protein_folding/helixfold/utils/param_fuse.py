@@ -512,6 +512,7 @@ def get_fused_params(params):
         fused_params.append(fused_param)
     return fused_params
 
+
 def get_fused_param_groups(model, is_dist_model):
     evoformer_params = []
     template_and_pair_transition_params = []

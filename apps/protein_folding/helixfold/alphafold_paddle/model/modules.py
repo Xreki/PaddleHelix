@@ -159,6 +159,8 @@ class AlphaFold(nn.Layer):
 
         """
         profile.push_profile_event(self.__class__.__name__)
+        #print(f"-- batch['seq_mask'].dtype={batch['seq_mask'].dtype}")
+
         inner_batch, num_residues = batch['aatype'].shape[1:]
 
         def _get_prev(ret):
@@ -191,6 +193,8 @@ class AlphaFold(nn.Layer):
                 # (B, E, N, ...)
                 num_ensemble = inner_batch
                 ensembled_batch = batch
+
+            #print(f"-- ensembled_batch['seq_mask'].dtype={ensembled_batch['seq_mask'].dtype}")
 
             non_ensembled_batch = prev
             return self.alphafold_iteration(
@@ -307,6 +311,7 @@ class AlphaFoldIteration(nn.Layer):
                 self.channel_num, head_config, self.global_config)
 
             head_name_ = Head_names.get(head_name, head_name)
+            print(f"-- head_name={head_name_}")
             setattr(self, head_name_, module)
             self.heads.append(module)
 
@@ -519,9 +524,14 @@ class Attention(nn.Layer):
         if self.fuse_attention:
             if nonbatched_bias is not None:
                 nonbatched_bias = paddle.unsqueeze(nonbatched_bias, axis=1)
-            _, _, _, _, _, _, _, output = _C_ops.fused_gate_attention(
+
+            use_flash_attn = True
+            #use_flash_attn = False
+
+            _, _, _, _, _, _, _, _, output = _C_ops.fused_gate_attention(
                 q_data, m_data, self.query_w, self.key_w, self.value_w, self.qkv_w, nonbatched_bias, bias, self.gating_w, self.gating_b,
-                self.output_w, self.output_b, 'has_gating', self.config.gating, 'merge_qkv', self.merge_qkv)
+                self.output_w, self.output_b, 'has_gating', self.config.gating, 'merge_qkv', self.merge_qkv,
+                "use_flash_attn", use_flash_attn)
         else:
             c = self.key_dim ** (-0.5)
             q = paddle.einsum('nbqa,ahc->nbqhc', q_data, self.query_w) * c

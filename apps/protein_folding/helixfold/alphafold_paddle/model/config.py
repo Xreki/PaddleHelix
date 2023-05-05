@@ -405,7 +405,7 @@ CONFIG = ml_collections.ConfigDict({
             'zero_init': True,
             'low_memory': False,
             'fuse_attention': True,
-            'use_dropout_nd': True,
+            'use_dropout_nd': True, #False,
             'outer_product_mean_position': 'origin', # 'origin' or 'middle', 'first', 'end', set 'end' if use BP
         },
         'heads': {

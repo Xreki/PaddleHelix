@@ -4,7 +4,7 @@ unset PADDLE_TRAINER_ENDPOINTS
 export CUDA_VISIBLE_DEVICES="4"
 
 precision=${1:-"bf16"}
-amp_level=${2:-"O2"}
+amp_level=${2:-"O1"}
 
 MY_PYTHON_BIN=`which python`
 
@@ -20,7 +20,7 @@ LDDT_SCORE_BIN=$root_path/tools/lddt
 # disable C++ enisum, using python enisum
 #export FLAGS_new_einsum=0
 export FLAGS_use_autotune=1
-export FLAGS_use_fast_math=1
+#export FLAGS_use_fast_math=1
 #export FLAGS_check_nan_inf=1
 
 chmod +x $TM_SCORE_BIN
@@ -38,12 +38,12 @@ chmod +x $LDDT_SCORE_BIN
 #export FLAGS_enable_gpu_memory_usage_log=1
 
 train_af2() {
-    start_step=5
+    start_step=0
     # distributed_args="-m paddle.distributed.launch --log_dir ./log/$exp_name"
     #profiler_type="native"
     #profiler_type="native-old"
     #profiler_type="nvprof"
-    #profiler_type="debug"
+    profiler_type="debug"
     if [ "${profiler_type}" = "" ]; then
         profiler_type="none"
         train_step=105
@@ -64,7 +64,8 @@ train_af2() {
     if [ "${use_saved_train_batch}" != "" ]; then
         output_filename=${output_filename}.use_saved_data
     fi
-    output_filename=${output_filename}.flashattn.dev20230424
+    #output_filename=${output_filename}.flashattn.dev20230430
+    output_filename=${output_filename}.dev20230430
 
     if [ "${profiler_type}" = "nvprof" ]; then
         export PATH=/opt/nvidia/nsight-systems/2022.5.1/bin:$PATH

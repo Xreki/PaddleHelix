@@ -1,16 +1,17 @@
 #!/bin/bash
 
+exp_name="$1"
+precision=${2:-"bf16"}
+amp_level=${3:-"O1"}
+
 cd $(dirname $0)
 
 root_path="$(pwd)"
-conda activate helixfold
-
-python_bin="/opt/conda/envs/helixfold/bin/python"
-# python_bin="python3"
+PPFLEETX_PATH=/root/paddlejob/workspace/work/liuyiqun/PaddleFleetX
 
 # export NCCL_DEBUG=INFO
-# export LD_LIBRARY_PATH=/usr/local/cuda/compat:$LD_LIBRARY_PATH
-export PYTHONPATH=$root_path:$PYTHONPATH
+export LD_LIBRARY_PATH=/usr/local/cuda/compat:$LD_LIBRARY_PATH
+export PYTHONPATH=$root_path:${PPFLEETX_PATH}:$PYTHONPATH
 # export PADDLE_NODE_NUM=$PADDLE_TRAINERS_NUM
 # export PADDLE_NODE_NUM=1
 TM_SCORE_BIN="$root_path/tools/tm_score"
@@ -19,7 +20,10 @@ chmod +x $TM_SCORE_BIN
 chmod +x $LDDT_SCORE_BIN
 
 # Enable C++ enisum instead of python enisum
-export FLAGS_new_einsum=1
+export FLAGS_new_einsum=0
+
+# Enable fast layer_norm
+export FLAGS_use_fast_math=1
 
 # Enable/Disable bf16 optimization
 export FLAGS_use_autotune=1
@@ -27,12 +31,14 @@ export FLAGS_use_autotune=1
 # Enable LayerNorm optimization
 export FLAGS_use_fast_math=1
 
+#if [ "${precision}" = "bf16" ]; then
+#  export NVIDIA_TF32_OVERRIDE=0
+#fi
 
 train_af2_single() {
-    start_step=0
+    start_step=1
     train_step=105
-    CUDA_VISIBLE_DEVICES=0 $python_bin train.py \
-            ${only_test} \
+    CUDA_VISIBLE_DEVICES=0 python train.py \
             --tm_score_bin="$TM_SCORE_BIN" \
             --lddt_score_bin="$LDDT_SCORE_BIN" \
             --data_config=${data_config} \
@@ -58,11 +64,10 @@ train_af2_single() {
 
 
 train_af2_distributed() {
-    start_step=0
+    start_step=1
     train_step=105
-    $python_bin -m paddle.distributed.launch train.py \
+    python -m paddle.distributed.launch train.py \
             --distributed \
-            ${only_test} \
             --tm_score_bin="$TM_SCORE_BIN" \
             --lddt_score_bin="$LDDT_SCORE_BIN" \
             --data_config=${data_config} \
@@ -87,224 +92,225 @@ train_af2_distributed() {
 }
 
 
-exp_name="$1"
-
 mkdir -p debug_log debug_models
 
-### Initial Training_N1C1
+
+### demo_initial_N1C1_dp1_dap1_bp1
 {
-    if [[ "$exp_name" == "demo_initial_N1C1" ]]; then
+    if [[ "$exp_name" == "demo_initial_N1C1_dp1_dap1_bp1" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
+        export PADDLE_NNODES=1
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        export CUDA_VISIBLE_DEVICES=7
+
         batch_size=1
         dap_degree=1
         bp_degree=1
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
+        train_config="./train_configs/initial.json"
+        data_config="./data_configs/demo_valid.json"
         model_name="initial"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
         log_step="--log_step=20"
-        eval_step="--eval_step=1000"
+        eval_step="--eval_step=104"
         save_step="--save_step=1000"
         train_af2_single
     fi
 }
 
-### Finetune_N1C1
-{
-    if [[ "$exp_name" == "demo_finetune_N1C1" ]]; then
-        export FLAGS_allocator_strategy=naive_best_fit
-        export FLAGS_fraction_of_gpu_memory_to_use=0.92
-        
-        batch_size=1
-        dap_degree=1
-        bp_degree=1
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
-        model_name="finetune"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
-        log_step="--log_step=20"
-        eval_step="--eval_step=1000"
-        save_step="--save_step=1000"
-        # init_model="$root_path/data/params/params_model_1.npz"
-        # init_model="$root_path/data/pd_params/model_1.pdparams"
-        train_af2_single
-    fi
-}
 
-### Initial Training_N1C8
+### demo_initial_N1C8_dp8_dap1_bp1
 {
-    if [[ "$exp_name" == "demo_initial_N1C8" ]]; then
+    if [[ "$exp_name" == "demo_initial_N1C8_dp8_dap1_bp1" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
         export PADDLE_NNODES=1
-        export PADDLE_MASTER="127.0.0.1:12538" # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
         export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
         batch_size=1
         dap_degree=1
         bp_degree=1
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
+        train_config="./train_configs/initial.json"
+        data_config="./data_configs/demo_valid.json"
         model_name="initial"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
         log_step="--log_step=20"
-        eval_step="--eval_step=1000"
+        eval_step="--eval_step=104"
         save_step="--save_step=1000"
         train_af2_distributed
     fi
 }
 
-### Finetune_N1C8
+
+### demo_initial_N1C2_dp1_dap1_bp2
 {
-    if [[ "$exp_name" == "demo_finetune_N1C8" ]]; then
+    if [[ "$exp_name" == "demo_initial_N1C2_dp1_dap1_bp2" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
+        export PADDLE_NNODES=1
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        export CUDA_VISIBLE_DEVICES=0,1
+
+        batch_size=1
+        dap_degree=1
+        bp_degree=2
+        train_config="./train_configs/initial.json"
+        data_config="./data_configs/demo_valid.json"
+        model_name="initial"
+        log_step="--log_step=20"
+        eval_step="--eval_step=104"
+        save_step="--save_step=1000"
+        train_af2_distributed
+    fi
+}
+
+
+### demo_initial_N1C8_dp1_dap4_bp2
+{
+    if [[ "$exp_name" == "demo_initial_N1C8_dp1_dap4_bp2" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
+        export PADDLE_NNODES=1
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+        batch_size=1
+        dap_degree=4
+        bp_degree=2
+        train_config="./train_configs/initial.json"
+        data_config="./data_configs/demo_valid.json"
+        model_name="initial"
+        log_step="--log_step=20"
+        eval_step="--eval_step=104"
+        save_step="--save_step=1000"
+        train_af2_distributed
+    fi
+}
+
+
+### demo_finetune_N1C8_dp2_dap4_bp1_model5
+{
+    if [[ "$exp_name" == "demo_finetune_N1C8_dp2_dap4_bp1_model5" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
         export FLAGS_allocator_strategy=naive_best_fit
         export FLAGS_fraction_of_gpu_memory_to_use=0.92
         export PADDLE_NNODES=1
-        export PADDLE_MASTER="127.0.0.1:12538" # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+        
+        batch_size=1
+        dap_degree=4
+        bp_degree=1
+        train_config="./train_configs/finetune.json"
+        data_config="./data_configs/demo_valid.json"
+        model_name="model_5"
+        log_step="--log_step=20"
+        eval_step="--eval_step=104"
+        save_step="--save_step=1000"
+        init_model="$root_path/data/params/params_model_5.npz"
+        train_af2_distributed
+    fi
+}
+
+
+### demo_finetune_N1C8_dp8_dap1_bp1_model5
+{
+    if [[ "$exp_name" == "demo_finetune_N1C8_dp8_dap1_bp1_model5" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
+        export FLAGS_allocator_strategy=naive_best_fit
+        export FLAGS_fraction_of_gpu_memory_to_use=0.92
+        export PADDLE_NNODES=1
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
         export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
         
         batch_size=1
         dap_degree=1
         bp_degree=1
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
-        model_name="finetune"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
+        train_config="./train_configs/finetune.json"
+        data_config="./data_configs/demo_valid.json"
+        model_name="model_5"
         log_step="--log_step=20"
-        eval_step="--eval_step=1000"
+        eval_step="--eval_step=104"
         save_step="--save_step=1000"
-        # init_model="$root_path/data/params/params_model_1.npz"
-        # init_model="$root_path/data/pd_params/model_1.pdparams"
+        init_model="$root_path/data/params/params_model_5.npz"
         train_af2_distributed
     fi
 }
 
-### Initial Training_N8C64
-{
-    if [[ "$exp_name" == "demo_initial_N8C64" ]]; then
-        export PADDLE_NNODES=8 # set number of devices
-        export PADDLE_MASTER="xxx.xxx.xxx.xxx:port" # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
-        # export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-        batch_size=1
-        dap_degree=1
-        bp_degree=1
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
-        model_name="initial"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
-        log_step="--log_step=20"
-        eval_step="--eval_step=1000"
-        save_step="--save_step=1000"
-        train_af2_distributed
-    fi
-}
-
-### Finetune_N8C64
+### demo_finetune_N1C8_dp2_dap4_bp1_model1
 {
-    if [[ "$exp_name" == "demo_finetune_N8C64" ]]; then
+    if [[ "$exp_name" == "demo_finetune_N1C8_dp2_dap4_bp1_model1" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
         export FLAGS_allocator_strategy=naive_best_fit
         export FLAGS_fraction_of_gpu_memory_to_use=0.92
-        export PADDLE_NNODES=8 # set number of devices
-        export PADDLE_MASTER="xxx.xxx.xxx.xxx:port" # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
-        # export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+        export PADDLE_NNODES=1
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+        
+        batch_size=1
+        dap_degree=4
+        bp_degree=1
+        train_config="./train_configs/finetune.json"
+        data_config="./data_configs/demo_valid.json"
+        model_name="finetune"
+        log_step="--log_step=20"
+        eval_step="--eval_step=104"
+        save_step="--save_step=1000"
+        init_model="$root_path/data/params/params_model_1.npz"
+        train_af2_distributed
+    fi
+}
+
+
+### demo_finetune_N1C8_dp8_dap1_bp1_model1
+{
+    if [[ "$exp_name" == "demo_finetune_N1C8_dp8_dap1_bp1_model1" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
+        export FLAGS_allocator_strategy=naive_best_fit
+        export FLAGS_fraction_of_gpu_memory_to_use=0.92
+        export PADDLE_NNODES=1
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
         
         batch_size=1
         dap_degree=1
         bp_degree=1
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
+        train_config="./train_configs/finetune.json"
+        data_config="./data_configs/demo_valid.json"
         model_name="finetune"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
         log_step="--log_step=20"
-        eval_step="--eval_step=1000"
+        eval_step="--eval_step=104"
         save_step="--save_step=1000"
-        # init_model="$root_path/data/params/params_model_1.npz"
-        # init_model="$root_path/data/pd_params/model_1.pdparams"
+        init_model="$root_path/data/params/params_model_1.npz"
         train_af2_distributed
     fi
 }
 
-### Initial Training_N8C64_dp16_bp2_dap2
+### demo_finetune_N1C1_dp1_dap1_bp1_model1
 {
-    if [[ "$exp_name" == "demo_initial_N8C64_dp16_bp2_dap2" ]]; then
-        export PADDLE_NNODES=8 # set number of devices
-        export PADDLE_MASTER="xxx.xxx.xxx.xxx:port" # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
-
-        batch_size=1
-        dap_degree=2
-        bp_degree=2
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
-        model_name="initial"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
-        log_step="--log_step=20"
-        eval_step="--eval_step=1000"
-        save_step="--save_step=1000"
-        train_af2_distributed
-    fi
-}
-
-# Initial Training_N8C64_dp32_bp1_dap2
-{
-    if [[ "$exp_name" == "demo_initial_N8C64_dp32_bp1_dap2" ]]; then
-        export PADDLE_NNODES=8 # set number of devices
-        export PADDLE_MASTER="xxx.xxx.xxx.xxx:port" # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
-
-        batch_size=1
-        dap_degree=2
-        bp_degree=1
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
-        model_name="initial"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
-        log_step="--log_step=20"
-        eval_step="--eval_step=1000"
-        save_step="--save_step=1000"
-        train_af2_distributed
-    fi
-}
-
-# Initial Training_N8C64_dp32_bp2_dap1
-{
-    if [[ "$exp_name" == "demo_initial_N8C64_dp32_bp2_dap1" ]]; then
-        export PADDLE_NNODES=8 # set number of devices
-        export PADDLE_MASTER="xxx.xxx.xxx.xxx:port" # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
-
+    if [[ "$exp_name" == "demo_finetune_N1C1_dp1_dap1_bp1_model1" ]]; then
+        unset PADDLE_TRAINER_ENDPOINTS
+        unset DISTRIBUTED_TRAINER_ENDPOINTS
+        export FLAGS_allocator_strategy=naive_best_fit
+        export FLAGS_fraction_of_gpu_memory_to_use=0.92
+        export PADDLE_NNODES=1
+        # set PADDLE_MASTER="xxx.xxx.xxx.xxx:port" according to your network environment
+        export CUDA_VISIBLE_DEVICES=0
+        
         batch_size=1
         dap_degree=1
-        bp_degree=2
-        train_config="./train_configs/demo.json"
-        data_config="./data_configs/demo.json"
-        model_name="initial"
-        precision="bf16"
-        # precision="fp32"
-        # amp_level="O1"
-        amp_level="O2"
+        bp_degree=1
+        train_config="./train_configs/finetune.json"
+        data_config="./data_configs/demo_valid.json"
+        model_name="finetune"
         log_step="--log_step=20"
-        eval_step="--eval_step=1000"
+        eval_step="--eval_step=104"
         save_step="--save_step=1000"
+        init_model="$root_path/data/params/params_model_1.npz"
         train_af2_distributed
     fi
 }

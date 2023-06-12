@@ -9,6 +9,7 @@ python_bin="/opt/conda/envs/helixfold/bin/python"
 # python_bin="python3"
 
 # export NCCL_DEBUG=INFO
+# export LD_LIBRARY_PATH=/usr/local/cuda/compat:$LD_LIBRARY_PATH
 export PYTHONPATH=$root_path:$PYTHONPATH
 # export PADDLE_NODE_NUM=$PADDLE_TRAINERS_NUM
 # export PADDLE_NODE_NUM=1
@@ -17,11 +18,15 @@ LDDT_SCORE_BIN="$root_path/tools/lddt"
 chmod +x $TM_SCORE_BIN
 chmod +x $LDDT_SCORE_BIN
 
-# Disable C++ enisum, using python enisum
-export FLAGS_new_einsum=0
+# Enable C++ enisum instead of python enisum
+export FLAGS_new_einsum=1
 
-# Enable bf16 optimization
+# Enable/Disable bf16 optimization
 export FLAGS_use_autotune=1
+
+# Enable LayerNorm optimization
+export FLAGS_use_fast_math=1
+
 
 train_af2_single() {
     start_step=0
@@ -37,6 +42,7 @@ train_af2_single() {
             --start_step=${start_step} \
             --train_step=${train_step} \
             --precision=${precision} \
+            --amp_level=${amp_level} \
             --num_workers 6 \
             --seed 2022 \
             --batch_size=$batch_size \
@@ -66,6 +72,7 @@ train_af2_distributed() {
             --start_step=${start_step} \
             --train_step=${train_step} \
             --precision=${precision} \
+            --amp_level=${amp_level} \
             --num_workers 6 \
             --seed 2022 \
             --batch_size=$batch_size \
@@ -95,6 +102,8 @@ mkdir -p debug_log debug_models
         model_name="initial"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"
@@ -116,10 +125,13 @@ mkdir -p debug_log debug_models
         model_name="finetune"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"
-        # init_model="$root_path/data/pd_params/model_5.pdparams"
+        # init_model="$root_path/data/params/params_model_1.npz"
+        # init_model="$root_path/data/pd_params/model_1.pdparams"
         train_af2_single
     fi
 }
@@ -139,6 +151,8 @@ mkdir -p debug_log debug_models
         model_name="initial"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"
@@ -163,10 +177,13 @@ mkdir -p debug_log debug_models
         model_name="finetune"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"
-        # init_model="$root_path/data/pd_params/model_5.pdparams"
+        # init_model="$root_path/data/params/params_model_1.npz"
+        # init_model="$root_path/data/pd_params/model_1.pdparams"
         train_af2_distributed
     fi
 }
@@ -186,6 +203,8 @@ mkdir -p debug_log debug_models
         model_name="initial"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"
@@ -210,10 +229,13 @@ mkdir -p debug_log debug_models
         model_name="finetune"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"
-        # init_model="$root_path/data/pd_params/model_5.pdparams"
+        # init_model="$root_path/data/params/params_model_1.npz"
+        # init_model="$root_path/data/pd_params/model_1.pdparams"
         train_af2_distributed
     fi
 }
@@ -232,6 +254,8 @@ mkdir -p debug_log debug_models
         model_name="initial"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"
@@ -253,6 +277,8 @@ mkdir -p debug_log debug_models
         model_name="initial"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"
@@ -274,6 +300,8 @@ mkdir -p debug_log debug_models
         model_name="initial"
         precision="bf16"
         # precision="fp32"
+        # amp_level="O1"
+        amp_level="O2"
         log_step="--log_step=20"
         eval_step="--eval_step=1000"
         save_step="--save_step=1000"

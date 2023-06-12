@@ -151,9 +151,29 @@ def eval(args, model, eval_dataset, compute_loss, cache_dir=None):
             batch['feat'] = align_feat(batch['feat'], args.dap_degree)
             batch['label'] = align_label(batch['label'], args.dap_degree)
         
-        res = model(batch, compute_loss=compute_loss)
+        # inference
+        def _forward_with_precision(batch):
+            if args.precision == "bf16":
+                black_list, white_list = get_custom_amp_list()
+                with paddle.amp.auto_cast(enable=True,
+                                          custom_white_list=white_list, 
+                                          custom_black_list=black_list, 
+                                          level=args.amp_level, 
+                                          dtype='bfloat16'):
+                    return model(batch, compute_loss=compute_loss)
+            elif args.precision == "fp32":
+                return model(batch, compute_loss=compute_loss)
+            else:
+                raise ValueError("Please choose precision from bf16 and fp32! ")
+        
+        # res = model(batch, compute_loss=compute_loss)
+        res = _forward_with_precision(batch)
         if compute_loss:
             results, loss = res
+            if loss.dtype == paddle.bfloat16:
+                loss = loss.cast("float32").item()
+            else:
+                loss = loss.item()
         else:
             results, loss = res, np.zeros([1])
         s2 = time_me()
@@ -272,8 +292,7 @@ def train(args, cur_step, model, train_data_gen, distill_data_gen, train_config,
         ema.update()
         optimizer.clear_grad()
 
-    if args.precision == "bf16":
-        loss = loss.cast("float32")
+    loss = loss.cast("float32") if loss.dtype == paddle.bfloat16 else loss
         
     s5 = time_me()
     batch_cost = s5 - s0
@@ -305,6 +324,9 @@ def main(args):
     set_logging_level(args.logging_level)
 
     """main function"""
+    new_einsum = os.getenv("FLAGS_new_einsum", True)
+    print(f'>>> PaddlePaddle commit: {paddle.version.commit}')
+    print(f'>>> FLAGS_new_einsum: {new_einsum}')
     print(f'>>> args:\n{args}')
     data_config = ml_collections.ConfigDict(json.load(open(args.data_config, 'r')))
     print(f'>>> data_config:\n{data_config}')
@@ -336,7 +358,7 @@ def main(args):
         model_config.model.global_config.dist_model = True
     if args.bp_degree > 1:
         model_config.model.global_config.outer_product_mean_position = 'end'
-    # print(f'>>> model_config:\n{model_config}')
+    print(f'>>> model_config:\n{model_config}')
 
     model = RunModel(train_config, model_config)
 

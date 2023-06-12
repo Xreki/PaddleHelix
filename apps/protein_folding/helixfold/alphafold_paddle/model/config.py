@@ -404,8 +404,10 @@ CONFIG = ml_collections.ConfigDict({
             'use_remat': False,
             'zero_init': True,
             'low_memory': False,
+            'fuse_linear': True,
             'fuse_attention': True,
-            'use_dropout_nd': True, #False,
+            'use_flash_attn': True,
+            'use_dropout_nd': True,
             'outer_product_mean_position': 'origin', # 'origin' or 'middle', 'first', 'end', set 'end' if use BP
         },
         'heads': {
